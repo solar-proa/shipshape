@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""
+Buoyancy equilibrium solver - finds the equilibrium pose of a boat.
+
+Uses Newton-Raphson iteration to find the pose (z, pitch, roll) where:
+1. Force equilibrium: buoyancy force = weight
+2. Moment equilibrium: CoB is directly below CoG (no pitch/roll moments)
+
+Usage:
+    python -m shipshape.buoyancy \
+        --design artifact/boat.design.FCStd \
+        --mass artifact/boat.mass.json \
+        --materials constant/material/proa.json \
+        --output artifact/boat.buoyancy.json
+"""
+
+import sys
+import os
+import json
+import argparse
+
+try:
+    import FreeCAD as App
+except ImportError as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    print("This script requires FreeCAD (conda-forge or bundled)", file=sys.stderr)
+    sys.exit(1)
+
+from shipshape.physics.center_of_buoyancy import compute_center_of_buoyancy
+from shipshape.physics.center_of_mass import compute_center_of_gravity, compute_cog_from_mass_artifact
+
+from .solve import solve_equilibrium, DEFAULT_MAX_ITERATIONS, DEFAULT_TOLERANCE
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Find buoyancy equilibrium pose using Newton-Raphson',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument('--design', required=True,
+                        help='Path to FCStd design file')
+    parser.add_argument('--mass', required=False,
+                        help='Path to mass.json artifact (optional, faster)')
+    parser.add_argument('--materials', required=True,
+                        help='Path to materials JSON file')
+    parser.add_argument('--output', required=True,
+                        help='Path to output JSON file')
+    parser.add_argument('--max-iterations', type=int, default=DEFAULT_MAX_ITERATIONS,
+                        help=f'Maximum iterations (default: {DEFAULT_MAX_ITERATIONS})')
+    parser.add_argument('--tolerance', type=float, default=DEFAULT_TOLERANCE,
+                        help=f'Convergence tolerance (default: {DEFAULT_TOLERANCE})')
+    parser.add_argument('--quiet', action='store_true',
+                        help='Suppress progress output')
+
+    args = parser.parse_args()
+
+    if not os.path.exists(args.design):
+        print(f"ERROR: Design file not found: {args.design}", file=sys.stderr)
+        sys.exit(1)
+
+    verbose = not args.quiet
+
+    if verbose:
+        print(f"Solving buoyancy equilibrium: {args.design}")
+
+    # Compute center of gravity
+    if verbose:
+        print("  Computing center of gravity...")
+
+    if args.mass and os.path.exists(args.mass):
+        cog_result = compute_cog_from_mass_artifact(args.mass, args.design)
+    else:
+        cog_result = compute_center_of_gravity(args.design, args.materials)
+
+    if verbose:
+        print(f"  CoG: ({cog_result['CoG']['x']:.1f}, {cog_result['CoG']['y']:.1f}, "
+              f"{cog_result['CoG']['z']:.1f}) mm")
+        print(f"  Total mass: {cog_result['total_mass_kg']:.2f} kg")
+        print(f"  Weight: {cog_result['weight_N']:.2f} N")
+
+    # Solve equilibrium
+    if verbose:
+        print("  Running Newton-Raphson solver...")
+
+    result = solve_equilibrium(
+        args.design,
+        cog_result,
+        max_iterations=args.max_iterations,
+        tolerance=args.tolerance,
+        verbose=verbose
+    )
+
+    # Add validator field
+    result['validator'] = 'buoyancy'
+
+    # Write output
+    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
+    with open(args.output, 'w') as f:
+        json.dump(result, f, indent=2)
+
+    if verbose:
+        print(f"✓ Buoyancy equilibrium {'found' if result['converged'] else 'NOT CONVERGED'}")
+        eq = result['equilibrium']
+        print(f"  Equilibrium pose:")
+        print(f"    z offset: {eq['z_offset_mm']:.2f} mm")
+        print(f"    pitch: {eq['pitch_deg']:.4f}°")
+        print(f"    roll: {eq['roll_deg']:.4f}°")
+        cog_w = result['center_of_gravity_world']
+        cob = result['center_of_buoyancy']
+        print(f"  CoG (world): ({cog_w['x']:.1f}, {cog_w['y']:.1f}, {cog_w['z']:.1f}) mm")
+        print(f"  CoB (world): ({cob['x']:.1f}, {cob['y']:.1f}, {cob['z']:.1f}) mm")
+        print(f"  Submerged volume: {result['submerged_volume_liters']:.2f} liters")
+        ama = result['ama']
+        vaka = result['vaka']
+        print(f"    Ama: {ama['submerged_volume_liters']:.1f}L / {ama['total_volume_liters']:.1f}L ({ama['submerged_percent']:.1f}%) @ z={ama['z_world_mm']:.0f}mm")
+        print(f"    Vaka: {vaka['submerged_volume_liters']:.1f}L / {vaka['total_volume_liters']:.1f}L ({vaka['submerged_percent']:.1f}%) @ z={vaka['z_world_mm']:.0f}mm")
+        print(f"  Buoyancy force: {result['buoyancy_force_N']:.2f} N")
+        print(f"  Output: {args.output}")
+
+    # Exit with error if not converged
+    if not result['converged']:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

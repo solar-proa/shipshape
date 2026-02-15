@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shipshape"
-version = "0.1.0"
+version = "0.2.0"
 description = "Open-source parametric vessel design and validation library"
 readme = "README.md"
 license = "MIT"
@@ -26,6 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 diagrams = ["matplotlib"]
+geometry = ["numpy"]  # FreeCAD required but not pip-installable (use conda-forge)
 
 [project.urls]
 Homepage = "https://github.com/solar-proa/shipshape"
