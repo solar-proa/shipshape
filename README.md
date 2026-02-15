@@ -2,21 +2,93 @@
 
 Open-source parametric vessel design and validation library.
 
+Shipshape provides boat-design-independent tools for naval engineering analysis. It is used by [Solar Proa CAD](https://github.com/solar-proa/CAD) but can be applied to any parametric vessel design.
+
+## Modules
+
+| Module | Description | Requires FreeCAD |
+|--------|-------------|------------------|
+| `parameter` | Merge base parameters and compute derived values via a project-supplied plugin | No |
+| `mass` | Compute component masses from a FreeCAD design and material properties | Yes |
+| `buoyancy` | Find equilibrium pose (sinkage, pitch, roll) using Newton-Raphson iteration | Yes |
+| `gz` | Compute the GZ righting-arm curve over a range of heel angles | Yes |
+| `physics` | Center-of-gravity and center-of-buoyancy calculations | Yes |
+| `validate_structure` | Structural validation: aka, mast, spine, brace, gunwale, wave slam, capsize analysis | No |
+
 ## Installation
 
-```
+```bash
 pip install shipshape
 ```
 
-## Usage
+For modules that require FreeCAD geometry (mass, buoyancy, gz, physics), install FreeCAD via conda-forge:
 
-```python
-from shipshape.parameter import compute_derived
-from shipshape.validate_structure import run_validation
-
-# Compute derived parameters from base parameters
-params = compute_derived(base_params)
-
-# Run structural validation
-results = run_validation(params, mass_data)
+```bash
+conda install -c conda-forge freecad
 ```
+
+For diagram generation (validate_structure plots):
+
+```bash
+pip install shipshape[diagrams]
+```
+
+## CLI Usage
+
+Each module can be run as a CLI tool via `python -m shipshape.<module>`.
+
+### parameter
+
+Merges boat and configuration JSON files, then calls a project-supplied `compute_derived()` function to calculate derived values.
+
+```bash
+PYTHONPATH=. python -m shipshape.parameter \
+    --compute myproject.parameter.compute \
+    --boat constants/boats/boat.json \
+    --configuration constants/configurations/config.json \
+    --output artifact/parameters.json
+```
+
+The `--compute` argument is a dotted module path. The module must export a `compute_derived(data: dict) -> dict` function.
+
+### mass
+
+```bash
+python -m shipshape.mass \
+    --design artifact/boat.design.FCStd \
+    --materials constants/material/materials.json \
+    --output artifact/boat.mass.json
+```
+
+### buoyancy
+
+```bash
+python -m shipshape.buoyancy \
+    --design artifact/boat.design.FCStd \
+    --materials constants/material/materials.json \
+    --output artifact/boat.buoyancy.json
+```
+
+### gz
+
+```bash
+python -m shipshape.gz \
+    --design artifact/boat.design.FCStd \
+    --buoyancy artifact/boat.buoyancy.json \
+    --output artifact/boat.gz.json \
+    --output-png artifact/boat.gz.png
+```
+
+### validate_structure
+
+```bash
+python -m shipshape.validate_structure \
+    --parameters artifact/parameters.json \
+    --mass artifact/boat.mass.json \
+    --gz artifact/boat.gz.json \
+    --output artifact/boat.validation.json
+```
+
+## License
+
+MIT
