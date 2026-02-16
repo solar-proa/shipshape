@@ -78,20 +78,21 @@ GRAVITY_M_S2 = 9.81  # m/s²
 #   - Rudder, deck, solar panels, rigging, etc.
 # =============================================================================
 
+DEFAULT_HULL_GROUPS = {
+    # Ama MUST come before vaka: ama parts have "pvc_bottom" in their labels
+    # which would falsely match the generic "bottom" pattern if vaka were first.
+    # Within each group, more specific patterns come first (e.g. ama_cone_foam
+    # before ama_cone).
+    "ama": ["ama_pipe", "ama_body_foam", "ama_cone_foam", "ama_cone"],
+    "vaka": ["foam_below_sole", "air_inside_vaka", "bottom", "sole", "hull"],
+}
+
+# Deprecated: flattened list kept for backward compatibility.
+# Prefer DEFAULT_HULL_GROUPS for new code.
 DEFAULT_HULL_COMPONENTS = [
-    # Ama (outrigger) - listed FIRST so they match before "bottom" pattern
-    # (ama parts have "pvc_bottom" in their labels which would falsely match "bottom")
-    # More specific patterns (ama_cone_foam) must come before less specific (ama_cone)
-    "ama_pipe",         # Ama body (upper and lower) - underscore to match label
-    "ama_body_foam",    # Ama body foam core
-    "ama_cone_foam",    # Ama cone foam (before ama_cone!)
-    "ama_cone",         # Ama cone ends (upper and lower)
-    # Vaka (main hull)
-    "foam_below_sole",  # Vaka foam core (before sole!)
-    "air_inside_vaka",  # Trapped air volume inside cabin
-    "bottom",           # Vaka bottom shell
-    "sole",             # Vaka sole (cabin floor)
-    "hull",             # Vaka hull sides (freeboard, but may be partially submerged)
+    pattern
+    for group_patterns in DEFAULT_HULL_GROUPS.values()
+    for pattern in group_patterns
 ]
 
 
@@ -260,13 +261,29 @@ def compute_submerged_volume(shape: Part.Shape, water_level_z: float = 0.0) -> d
     }
 
 
-def load_hull(fcstd_path: str, hull_components: list = None) -> dict:
+def _build_pattern_list(hull_groups: dict) -> list:
+    """
+    Flatten hull_groups into an ordered list of (pattern, group_name) tuples.
+
+    Groups are iterated in insertion order. Within each group, patterns are
+    kept in order. This list is used for first-match pattern lookup, so more
+    specific patterns (e.g. "ama_cone_foam") should come before less specific
+    ones (e.g. "ama_cone") inside each group.
+    """
+    result = []
+    for group_name, patterns in hull_groups.items():
+        for pattern in patterns:
+            result.append((pattern, group_name))
+    return result
+
+
+def load_hull(fcstd_path: str, hull_groups: dict = None, hull_components: list = None) -> dict:
     """
     Load hull geometry from a FreeCAD document.
 
     Opens the document, extracts hull component shapes (with .copy() so they
-    are independent of the document), computes rotation center and reference
-    points, then closes the document.
+    are independent of the document), computes rotation center and per-group
+    reference points, then closes the document.
 
     This should be called **once** per run. The returned dict is passed to
     compute_center_of_buoyancy() which can then be called many times without
@@ -274,20 +291,26 @@ def load_hull(fcstd_path: str, hull_components: list = None) -> dict:
 
     Args:
         fcstd_path: Path to the FreeCAD design file
-        hull_components: List of component name patterns to include.
-                        Defaults to DEFAULT_HULL_COMPONENTS.
+        hull_groups: Dict mapping group names to lists of component name
+                     patterns. Defaults to DEFAULT_HULL_GROUPS.
+        hull_components: Deprecated. Flat list of component name patterns.
+                        Ignored when hull_groups is provided.
 
     Returns:
         Dictionary with:
-        - hull_shapes: list of {"label", "shape", "pattern"} with copied shapes
+        - hull_shapes: list of {"label", "shape", "pattern", "group"} with copied shapes
         - rotation_center: Base.Vector for pose transformations
-        - ama_ref_body: ama reference point in body frame
-        - vaka_ref_body: vaka reference point in body frame
-        - total_ama_volume_mm3: total ama volume
-        - total_vaka_volume_mm3: total vaka volume
+        - group_refs_body: dict mapping group name to {"x", "y", "z"} reference point
+        - group_total_volumes_mm3: dict mapping group name to total volume in mm3
     """
-    if hull_components is None:
-        hull_components = DEFAULT_HULL_COMPONENTS
+    if hull_groups is None:
+        if hull_components is not None:
+            # Legacy path: wrap flat list into a single group
+            hull_groups = {"hull": hull_components}
+        else:
+            hull_groups = DEFAULT_HULL_GROUPS
+
+    pattern_list = _build_pattern_list(hull_groups)
 
     doc = App.openDocument(fcstd_path)
     all_objects = _get_all_objects(doc.Objects)
@@ -304,65 +327,67 @@ def load_hull(fcstd_path: str, hull_components: list = None) -> dict:
 
         label_lower = obj.Label.lower()
 
-        is_hull = False
         matched_pattern = None
-        for pattern in hull_components:
+        matched_group = None
+        for pattern, group_name in pattern_list:
             if pattern.lower() in label_lower:
-                is_hull = True
                 matched_pattern = pattern
+                matched_group = group_name
                 break
 
-        if not is_hull:
+        if matched_pattern is None:
             continue
 
         processed_labels.add(obj.Label)
         hull_shapes.append({
             "label": obj.Label,
             "shape": obj.Shape.copy(),
-            "pattern": matched_pattern
+            "pattern": matched_pattern,
+            "group": matched_group
         })
+
+    group_names = list(hull_groups.keys())
 
     if not hull_shapes:
         App.closeDocument(doc.Name)
         return {
             "hull_shapes": [],
             "rotation_center": Base.Vector(0, 0, 0),
-            "ama_ref_body": {"x": 0.0, "y": 0.0, "z": 0.0},
-            "vaka_ref_body": {"x": 0.0, "y": 0.0, "z": 0.0},
-            "total_ama_volume_mm3": 0.0,
-            "total_vaka_volume_mm3": 0.0,
+            "group_refs_body": {name: {"x": 0.0, "y": 0.0, "z": 0.0} for name in group_names},
+            "group_total_volumes_mm3": {name: 0.0 for name in group_names},
         }
 
-    # Compute hull reference points (body frame) from original geometry
-    ama_z_min = None
-    vaka_x_sum, vaka_y_sum, vaka_z_min, vaka_count = 0.0, 0.0, None, 0
+    # Compute per-group reference points (body frame) from original geometry.
+    # Reference point: centroid x/y averaged across group shapes, z_min of group.
+    # Mirror copies (label contains "001") are excluded from z_min for the
+    # ama group (they are the port-side mirror of the starboard ama).
+    group_x_sum = {name: 0.0 for name in group_names}
+    group_y_sum = {name: 0.0 for name in group_names}
+    group_z_min = {name: None for name in group_names}
+    group_count = {name: 0 for name in group_names}
 
     for hs in hull_shapes:
+        g = hs["group"]
         bbox = hs["shape"].BoundBox
         cog = hs["shape"].CenterOfGravity
-        is_ama = hs["pattern"].startswith("ama")
 
-        if is_ama:
-            if "001" not in hs["label"]:
-                if ama_z_min is None or bbox.ZMin < ama_z_min:
-                    ama_z_min = bbox.ZMin
-        else:
-            vaka_x_sum += cog.x
-            vaka_y_sum += cog.y
-            vaka_count += 1
-            if vaka_z_min is None or bbox.ZMin < vaka_z_min:
-                vaka_z_min = bbox.ZMin
+        # Skip mirror copies for z_min calculation
+        if "001" not in hs["label"]:
+            if group_z_min[g] is None or bbox.ZMin < group_z_min[g]:
+                group_z_min[g] = bbox.ZMin
 
-    ama_ref_body = {
-        "x": 0.0,
-        "y": 0.0,
-        "z": ama_z_min if ama_z_min is not None else 0.0
-    }
-    vaka_ref_body = {
-        "x": vaka_x_sum / vaka_count if vaka_count > 0 else 0.0,
-        "y": vaka_y_sum / vaka_count if vaka_count > 0 else 0.0,
-        "z": vaka_z_min if vaka_z_min is not None else 0.0
-    }
+        group_x_sum[g] += cog.x
+        group_y_sum[g] += cog.y
+        group_count[g] += 1
+
+    group_refs_body = {}
+    for name in group_names:
+        cnt = group_count[name]
+        group_refs_body[name] = {
+            "x": round(group_x_sum[name] / cnt, 2) if cnt > 0 else 0.0,
+            "y": round(group_y_sum[name] / cnt, 2) if cnt > 0 else 0.0,
+            "z": round(group_z_min[name], 2) if group_z_min[name] is not None else 0.0
+        }
 
     # Compute the combined center of mass for rotation center
     total_volume = 0.0
@@ -382,25 +407,18 @@ def load_hull(fcstd_path: str, hull_components: list = None) -> dict:
     else:
         rotation_center = Base.Vector(0, 0, 0)
 
-    # Compute total volumes per hull type
-    total_ama_volume_mm3 = 0.0
-    total_vaka_volume_mm3 = 0.0
+    # Compute total volumes per group
+    group_total_volumes_mm3 = {name: 0.0 for name in group_names}
     for hs in hull_shapes:
-        vol = hs["shape"].Volume
-        if hs["pattern"].startswith("ama"):
-            total_ama_volume_mm3 += vol
-        else:
-            total_vaka_volume_mm3 += vol
+        group_total_volumes_mm3[hs["group"]] += hs["shape"].Volume
 
     App.closeDocument(doc.Name)
 
     return {
         "hull_shapes": hull_shapes,
         "rotation_center": rotation_center,
-        "ama_ref_body": ama_ref_body,
-        "vaka_ref_body": vaka_ref_body,
-        "total_ama_volume_mm3": total_ama_volume_mm3,
-        "total_vaka_volume_mm3": total_vaka_volume_mm3,
+        "group_refs_body": group_refs_body,
+        "group_total_volumes_mm3": group_total_volumes_mm3,
     }
 
 
@@ -450,14 +468,14 @@ def compute_center_of_buoyancy(hull: dict, z_displacement: float = 0.0,
         - buoyancy_force_N: Buoyancy force in Newtons (saltwater)
         - displacement_kg: Water displaced in kg (saltwater)
         - pose: The input pose parameters
-        - components: Per-component breakdown
+        - hull_refs: per-group body and world reference points
+        - total_volumes: per-group total volume in liters
+        - components: Per-component breakdown (with "group" field)
     """
     hull_shapes = hull["hull_shapes"]
     rotation_center = hull["rotation_center"]
-    ama_ref_body = hull["ama_ref_body"]
-    vaka_ref_body = hull["vaka_ref_body"]
-    total_ama_volume_mm3 = hull["total_ama_volume_mm3"]
-    total_vaka_volume_mm3 = hull["total_vaka_volume_mm3"]
+    group_refs_body = hull["group_refs_body"]
+    group_total_volumes_mm3 = hull["group_total_volumes_mm3"]
 
     if not hull_shapes:
         return {
@@ -472,6 +490,8 @@ def compute_center_of_buoyancy(hull: dict, z_displacement: float = 0.0,
                 "pitch_deg": pitch_deg,
                 "roll_deg": roll_deg
             },
+            "hull_refs": {},
+            "total_volumes": {},
             "components": []
         }
 
@@ -499,6 +519,7 @@ def compute_center_of_buoyancy(hull: dict, z_displacement: float = 0.0,
         component_results.append({
             "label": hs["label"],
             "pattern": hs["pattern"],
+            "group": hs["group"],
             "submerged_volume_mm3": round(vol, 2),
             "submerged_volume_liters": round(vol / 1e6, 4),
             "CoB": {
@@ -535,9 +556,24 @@ def compute_center_of_buoyancy(hull: dict, z_displacement: float = 0.0,
     displacement_kg = volume_m3 * SALTWATER_DENSITY_KG_M3
     buoyancy_force_N = displacement_kg * GRAVITY_M_S2
 
-    # Transform hull reference points to world frame
-    ama_ref_world = _transform_ref_point(ama_ref_body, z_displacement, pitch_deg, roll_deg, rotation_center)
-    vaka_ref_world = _transform_ref_point(vaka_ref_body, z_displacement, pitch_deg, roll_deg, rotation_center)
+    # Transform per-group reference points to world frame
+    hull_refs = {}
+    for name, ref_body in group_refs_body.items():
+        ref_world = _transform_ref_point(ref_body, z_displacement, pitch_deg, roll_deg, rotation_center)
+        hull_refs[name] = {
+            "body": {
+                "x": round(ref_body["x"], 2),
+                "y": round(ref_body["y"], 2),
+                "z": round(ref_body["z"], 2)
+            },
+            "world": ref_world
+        }
+
+    # Per-group total volumes in liters
+    total_volumes = {
+        name: round(vol_mm3 / 1e6, 1)
+        for name, vol_mm3 in group_total_volumes_mm3.items()
+    }
 
     return {
         "CoB": combined_cob,
@@ -555,24 +591,8 @@ def compute_center_of_buoyancy(hull: dict, z_displacement: float = 0.0,
                 "z": round(rotation_center.z, 2)
             }
         },
-        "hull_refs": {
-            "ama_body": {
-                "x": round(ama_ref_body["x"], 2),
-                "y": round(ama_ref_body["y"], 2),
-                "z": round(ama_ref_body["z"], 2)
-            },
-            "ama_world": ama_ref_world,
-            "vaka_body": {
-                "x": round(vaka_ref_body["x"], 2),
-                "y": round(vaka_ref_body["y"], 2),
-                "z": round(vaka_ref_body["z"], 2)
-            },
-            "vaka_world": vaka_ref_world
-        },
-        "total_volumes": {
-            "ama_liters": round(total_ama_volume_mm3 / 1e6, 1),
-            "vaka_liters": round(total_vaka_volume_mm3 / 1e6, 1)
-        },
+        "hull_refs": hull_refs,
+        "total_volumes": total_volumes,
         "components": component_results
     }
 

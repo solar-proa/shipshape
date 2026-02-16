@@ -14,51 +14,38 @@ import numpy as np
 from shipshape.physics.center_of_buoyancy import compute_center_of_buoyancy
 
 
-def extract_hull_breakdown(cob_result: dict) -> dict:
+def extract_group_breakdown(cob_result: dict) -> dict:
     """
-    Extract ama vs vaka breakdown from CoB result.
+    Extract per-group breakdown from CoB result.
 
     Returns:
-        Dictionary with:
-        - ama_liters: submerged ama buoyancy volume
-        - vaka_liters: submerged vaka buoyancy volume
-        - ama_total_liters: total ama volume
-        - vaka_total_liters: total vaka volume
-        - ama_z_world: world z-coordinate of ama bottom reference point
-        - vaka_z_world: world z-coordinate of vaka bottom reference point
+        dict mapping group name to:
+        - submerged_liters: submerged volume for this group
+        - total_liters: total volume for this group
+        - z_world: world z-coordinate of group reference point
     """
-    ama_liters = 0.0
-    vaka_liters = 0.0
-
-    components = cob_result.get('components', [])
-
-    for comp in components:
-        pattern = comp.get('pattern', '')
+    # Sum submerged volume per group from components
+    group_submerged = {}
+    for comp in cob_result.get('components', []):
+        g = comp.get('group', 'hull')
         vol = comp.get('submerged_volume_liters', 0.0)
+        group_submerged[g] = group_submerged.get(g, 0.0) + vol
 
-        if pattern.startswith('ama'):
-            ama_liters += vol
-        else:
-            vaka_liters += vol
-
-    # Get hull reference points in world frame
     hull_refs = cob_result.get('hull_refs', {})
-    ama_z_world = hull_refs.get('ama_world', {}).get('z', 0.0)
-    vaka_z_world = hull_refs.get('vaka_world', {}).get('z', 0.0)
-
-    # Get total volumes
     total_volumes = cob_result.get('total_volumes', {})
-    ama_total_liters = total_volumes.get('ama_liters', 0.0)
-    vaka_total_liters = total_volumes.get('vaka_liters', 0.0)
 
-    return {
-        'ama_liters': round(ama_liters, 1),
-        'vaka_liters': round(vaka_liters, 1),
-        'ama_total_liters': ama_total_liters,
-        'vaka_total_liters': vaka_total_liters,
-        'ama_z_world': round(ama_z_world, 0),
-        'vaka_z_world': round(vaka_z_world, 0)
-    }
+    # Build breakdown for every group present in hull_refs (covers all groups
+    # even if they have zero submerged volume).
+    all_groups = set(group_submerged) | set(hull_refs) | set(total_volumes)
+    breakdown = {}
+    for name in sorted(all_groups):
+        breakdown[name] = {
+            'submerged_liters': round(group_submerged.get(name, 0.0), 1),
+            'total_liters': total_volumes.get(name, 0.0),
+            'z_world': round(hull_refs.get(name, {}).get('world', {}).get('z', 0.0), 0),
+        }
+
+    return breakdown
 
 
 # Solver parameters
@@ -247,11 +234,11 @@ def solve_equilibrium(hull: dict, cog_result: dict,
         residuals = compute_residuals(cog_result, cob_result, z, pitch, roll)
         residual_norm = np.linalg.norm(residuals)
 
-        # Extract hull breakdown for diagnostics
-        hull_breakdown = extract_hull_breakdown(cob_result)
+        # Extract per-group breakdown for diagnostics
+        group_breakdown = extract_group_breakdown(cob_result)
 
         # Record iteration
-        iteration_history.append({
+        iter_record = {
             'iteration': iteration,
             'z_mm': round(z, 2),
             'pitch_deg': round(pitch, 4),
@@ -262,18 +249,18 @@ def solve_equilibrium(hull: dict, cog_result: dict,
             'roll_residual': round(residuals[2], 6),
             'buoyancy_N': round(cob_result['buoyancy_force_N'], 2),
             'submerged_liters': round(cob_result['submerged_volume_liters'], 2),
-            'ama_liters': hull_breakdown['ama_liters'],
-            'vaka_liters': hull_breakdown['vaka_liters'],
-            'ama_z_world': hull_breakdown['ama_z_world'],
-            'vaka_z_world': hull_breakdown['vaka_z_world']
-        })
+            'group_breakdown': group_breakdown,
+        }
+        iteration_history.append(iter_record)
 
         if verbose:
             print(f"  Iteration {iteration}: z={z:.1f}mm, pitch={pitch:.3f}°, "
                   f"roll={roll:.3f}°, |r|={residual_norm:.4f} "
                   f"[F:{residuals[0]:.3f}, P:{residuals[1]:.3f}, R:{residuals[2]:.3f}]")
-            print(f"    Ama: {hull_breakdown['ama_liters']:.0f}L @ z={hull_breakdown['ama_z_world']:.0f}mm, "
-                  f"Vaka: {hull_breakdown['vaka_liters']:.0f}L @ z={hull_breakdown['vaka_z_world']:.0f}mm")
+            parts = []
+            for gname, gdata in group_breakdown.items():
+                parts.append(f"{gname}: {gdata['submerged_liters']:.0f}L @ z={gdata['z_world']:.0f}mm")
+            print(f"    {', '.join(parts)}")
 
         # Check convergence
         if residual_norm < tolerance:
@@ -373,8 +360,20 @@ def solve_equilibrium(hull: dict, cog_result: dict,
     rotation_center = final_cob['pose'].get('rotation_center', cog_result['CoG'])
     cog_world = transform_point(cog_result['CoG'], z, pitch, roll, rotation_center)
 
-    # Extract ama/vaka breakdown
-    hull_breakdown = extract_hull_breakdown(final_cob)
+    # Extract per-group breakdown
+    group_breakdown = extract_group_breakdown(final_cob)
+
+    # Build hull_groups output: one entry per group
+    hull_groups_output = {}
+    for name, gdata in group_breakdown.items():
+        total_l = gdata['total_liters']
+        sub_l = gdata['submerged_liters']
+        hull_groups_output[name] = {
+            'submerged_volume_liters': sub_l,
+            'total_volume_liters': total_l,
+            'submerged_percent': round(100 * sub_l / total_l, 1) if total_l > 0 else 0.0,
+            'z_world_mm': gdata['z_world'],
+        }
 
     return {
         'converged': converged,
@@ -395,18 +394,7 @@ def solve_equilibrium(hull: dict, cog_result: dict,
         'weight_N': round(cog_result['weight_N'], 2),
         'buoyancy_force_N': round(final_cob['buoyancy_force_N'], 2),
         'submerged_volume_liters': round(final_cob['submerged_volume_liters'], 2),
-        'ama': {
-            'submerged_volume_liters': hull_breakdown['ama_liters'],
-            'total_volume_liters': hull_breakdown['ama_total_liters'],
-            'submerged_percent': round(100 * hull_breakdown['ama_liters'] / hull_breakdown['ama_total_liters'], 1) if hull_breakdown['ama_total_liters'] > 0 else 0.0,
-            'z_world_mm': hull_breakdown['ama_z_world']
-        },
-        'vaka': {
-            'submerged_volume_liters': hull_breakdown['vaka_liters'],
-            'total_volume_liters': hull_breakdown['vaka_total_liters'],
-            'submerged_percent': round(100 * hull_breakdown['vaka_liters'] / hull_breakdown['vaka_total_liters'], 1) if hull_breakdown['vaka_total_liters'] > 0 else 0.0,
-            'z_world_mm': hull_breakdown['vaka_z_world']
-        },
+        'hull_groups': hull_groups_output,
         'final_residuals': {
             'force': round(final_residuals[0], 6),
             'pitch_moment': round(final_residuals[1], 6),

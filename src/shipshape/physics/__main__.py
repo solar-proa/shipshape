@@ -27,7 +27,7 @@ except ImportError as e:
     sys.exit(1)
 
 from shipshape.physics.center_of_mass import compute_center_of_gravity, compute_cog_from_mass_artifact
-from shipshape.physics.center_of_buoyancy import compute_center_of_buoyancy
+from shipshape.physics.center_of_buoyancy import load_hull, compute_center_of_buoyancy
 
 
 def cmd_cog(args):
@@ -37,14 +37,18 @@ def cmd_cog(args):
     if args.mass_artifact:
         # Use precomputed mass data
         print(f"  Using mass artifact: {args.mass_artifact}")
-        result = compute_cog_from_mass_artifact(args.mass_artifact, args.design)
+        with open(args.mass_artifact, 'r') as f:
+            mass_data = json.load(f)
+        result = compute_cog_from_mass_artifact(mass_data, args.design)
     else:
         # Compute from geometry + materials
         if not args.materials:
             print("ERROR: --materials required when not using --mass-artifact", file=sys.stderr)
             sys.exit(1)
         print(f"  Materials: {args.materials}")
-        result = compute_center_of_gravity(args.design, args.materials)
+        with open(args.materials, 'r') as f:
+            materials = json.load(f)
+        result = compute_center_of_gravity(args.design, materials)
 
     # Add validator field for pipeline compatibility
     result['validator'] = 'cog'
@@ -67,19 +71,24 @@ def cmd_cob(args):
     print(f"Computing center of buoyancy: {args.design}")
     print(f"  Pose: z={args.z} mm, pitch={args.pitch}°, roll={args.roll}°")
 
-    if args.hull_components:
-        hull_components = [c.strip() for c in args.hull_components.split(',')]
-        print(f"  Hull components: {hull_components}")
-    else:
-        hull_components = None  # Use default ["vaka", "ama"]
+    # Parse hull groups
+    hull_groups = None
+    if args.hull_groups:
+        if os.path.isfile(args.hull_groups):
+            with open(args.hull_groups, 'r') as f:
+                hull_groups = json.load(f)
+        else:
+            hull_groups = json.loads(args.hull_groups)
+        print(f"  Hull groups: {list(hull_groups.keys())}")
+
+    hull = load_hull(args.design, hull_groups=hull_groups)
 
     result = compute_center_of_buoyancy(
-        fcstd_path=args.design,
+        hull=hull,
         z_displacement=args.z,
         pitch_deg=args.pitch,
         roll_deg=args.roll,
         water_level_z=args.water_level,
-        hull_components=hull_components
     )
 
     # Add validator field for pipeline compatibility
@@ -120,7 +129,9 @@ def main():
     cob_parser.add_argument('--pitch', type=float, default=0.0, help='Pitch angle in degrees (positive = bow up)')
     cob_parser.add_argument('--roll', type=float, default=0.0, help='Roll angle in degrees (positive = starboard down)')
     cob_parser.add_argument('--water-level', type=float, default=0.0, help='Water surface Z coordinate in mm')
-    cob_parser.add_argument('--hull-components', help='Comma-separated list of hull component patterns (default: vaka,ama)')
+    cob_parser.add_argument('--hull-groups',
+                            help='Path to hull groups JSON file or inline JSON string '
+                                 '(maps group names to pattern lists)')
     cob_parser.add_argument('--output', required=True, help='Path to output JSON file')
 
     args = parser.parse_args()

@@ -50,6 +50,9 @@ def main():
                         help=f'Maximum iterations (default: {DEFAULT_MAX_ITERATIONS})')
     parser.add_argument('--tolerance', type=float, default=DEFAULT_TOLERANCE,
                         help=f'Convergence tolerance (default: {DEFAULT_TOLERANCE})')
+    parser.add_argument('--hull-groups',
+                        help='Path to hull groups JSON file or inline JSON string '
+                             '(maps group names to pattern lists)')
     parser.add_argument('--quiet', action='store_true',
                         help='Suppress progress output')
 
@@ -84,10 +87,21 @@ def main():
         print(f"  Total mass: {cog_result['total_mass_kg']:.2f} kg")
         print(f"  Weight: {cog_result['weight_N']:.2f} N")
 
+    # Parse hull groups
+    hull_groups = None
+    if args.hull_groups:
+        if os.path.isfile(args.hull_groups):
+            with open(args.hull_groups, 'r') as f:
+                hull_groups = json.load(f)
+        else:
+            hull_groups = json.loads(args.hull_groups)
+        if verbose:
+            print(f"  Hull groups: {list(hull_groups.keys())}")
+
     # Load hull geometry (once, reused by solver)
     if verbose:
         print("  Loading hull geometry...")
-    hull = load_hull(args.design)
+    hull = load_hull(args.design, hull_groups=hull_groups)
 
     # Solve equilibrium
     if verbose:
@@ -121,10 +135,11 @@ def main():
         print(f"  CoG (world): ({cog_w['x']:.1f}, {cog_w['y']:.1f}, {cog_w['z']:.1f}) mm")
         print(f"  CoB (world): ({cob['x']:.1f}, {cob['y']:.1f}, {cob['z']:.1f}) mm")
         print(f"  Submerged volume: {result['submerged_volume_liters']:.2f} liters")
-        ama = result['ama']
-        vaka = result['vaka']
-        print(f"    Ama: {ama['submerged_volume_liters']:.1f}L / {ama['total_volume_liters']:.1f}L ({ama['submerged_percent']:.1f}%) @ z={ama['z_world_mm']:.0f}mm")
-        print(f"    Vaka: {vaka['submerged_volume_liters']:.1f}L / {vaka['total_volume_liters']:.1f}L ({vaka['submerged_percent']:.1f}%) @ z={vaka['z_world_mm']:.0f}mm")
+        for gname, gdata in result['hull_groups'].items():
+            print(f"    {gname}: {gdata['submerged_volume_liters']:.1f}L / "
+                  f"{gdata['total_volume_liters']:.1f}L "
+                  f"({gdata['submerged_percent']:.1f}%) "
+                  f"@ z={gdata['z_world_mm']:.0f}mm")
         print(f"  Buoyancy force: {result['buoyancy_force_N']:.2f} N")
         print(f"  Output: {args.output}")
 

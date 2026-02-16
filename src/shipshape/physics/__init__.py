@@ -13,7 +13,8 @@ from .center_of_buoyancy import (
     compute_cob,
     transform_shape,
     compute_submerged_volume,
-    DEFAULT_HULL_COMPONENTS,
+    DEFAULT_HULL_GROUPS,
+    DEFAULT_HULL_COMPONENTS,  # deprecated: use DEFAULT_HULL_GROUPS
 )
 
 from .center_of_mass import (
@@ -29,7 +30,8 @@ __all__ = [
     'compute_cob',
     'transform_shape',
     'compute_submerged_volume',
-    'DEFAULT_HULL_COMPONENTS',
+    'DEFAULT_HULL_GROUPS',
+    'DEFAULT_HULL_COMPONENTS',  # deprecated
     # Center of Gravity
     'compute_center_of_gravity',
     'compute_cog',
