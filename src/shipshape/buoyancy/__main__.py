@@ -26,7 +26,7 @@ except ImportError as e:
     print("This script requires FreeCAD (conda-forge or bundled)", file=sys.stderr)
     sys.exit(1)
 
-from shipshape.physics.center_of_buoyancy import compute_center_of_buoyancy
+from shipshape.physics.center_of_buoyancy import load_hull
 from shipshape.physics.center_of_mass import compute_center_of_gravity, compute_cog_from_mass_artifact
 
 from .solve import solve_equilibrium, DEFAULT_MAX_ITERATIONS, DEFAULT_TOLERANCE
@@ -68,10 +68,15 @@ def main():
     if verbose:
         print("  Computing center of gravity...")
 
+    with open(args.materials, 'r') as f:
+        materials = json.load(f)
+
     if args.mass and os.path.exists(args.mass):
-        cog_result = compute_cog_from_mass_artifact(args.mass, args.design)
+        with open(args.mass, 'r') as f:
+            mass_data = json.load(f)
+        cog_result = compute_cog_from_mass_artifact(mass_data, args.design)
     else:
-        cog_result = compute_center_of_gravity(args.design, args.materials)
+        cog_result = compute_center_of_gravity(args.design, materials)
 
     if verbose:
         print(f"  CoG: ({cog_result['CoG']['x']:.1f}, {cog_result['CoG']['y']:.1f}, "
@@ -79,12 +84,17 @@ def main():
         print(f"  Total mass: {cog_result['total_mass_kg']:.2f} kg")
         print(f"  Weight: {cog_result['weight_N']:.2f} N")
 
+    # Load hull geometry (once, reused by solver)
+    if verbose:
+        print("  Loading hull geometry...")
+    hull = load_hull(args.design)
+
     # Solve equilibrium
     if verbose:
         print("  Running Newton-Raphson solver...")
 
     result = solve_equilibrium(
-        args.design,
+        hull,
         cog_result,
         max_iterations=args.max_iterations,
         tolerance=args.tolerance,

@@ -25,7 +25,9 @@ def main():
         sys.exit(1)
 
     print(f"Analyzing mass properties: {args.design}")
-    result = analyze_mass(args.design, args.materials)
+    with open(args.materials, 'r') as f:
+        materials = json.load(f)
+    result = analyze_mass(args.design, materials)
 
     # Write JSON output
     os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)

@@ -8,6 +8,7 @@
 # buoyancy equilibrium solver (Newton-Raphson).
 
 from .center_of_buoyancy import (
+    load_hull,
     compute_center_of_buoyancy,
     compute_cob,
     transform_shape,
@@ -23,6 +24,7 @@ from .center_of_mass import (
 
 __all__ = [
     # Center of Buoyancy
+    'load_hull',
     'compute_center_of_buoyancy',
     'compute_cob',
     'transform_shape',

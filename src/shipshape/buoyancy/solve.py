@@ -143,7 +143,7 @@ def compute_residuals(cog_result: dict, cob_result: dict,
     return np.array([force_residual, pitch_moment, roll_moment])
 
 
-def compute_jacobian(fcstd_path: str, cog_result: dict,
+def compute_jacobian(hull: dict, cog_result: dict,
                      z: float, pitch: float, roll: float,
                      z_step: float = DEFAULT_Z_STEP,
                      angle_step: float = DEFAULT_ANGLE_STEP) -> np.ndarray:
@@ -158,22 +158,22 @@ def compute_jacobian(fcstd_path: str, cog_result: dict,
     J = np.zeros((3, 3))
 
     # Compute derivatives with respect to z
-    cob_plus = compute_center_of_buoyancy(fcstd_path, z + z_step, pitch, roll)
-    cob_minus = compute_center_of_buoyancy(fcstd_path, z - z_step, pitch, roll)
+    cob_plus = compute_center_of_buoyancy(hull, z + z_step, pitch, roll)
+    cob_minus = compute_center_of_buoyancy(hull, z - z_step, pitch, roll)
     r_plus = compute_residuals(cog_result, cob_plus, z + z_step, pitch, roll)
     r_minus = compute_residuals(cog_result, cob_minus, z - z_step, pitch, roll)
     J[:, 0] = (r_plus - r_minus) / (2 * z_step)
 
     # Compute derivatives with respect to pitch
-    cob_plus = compute_center_of_buoyancy(fcstd_path, z, pitch + angle_step, roll)
-    cob_minus = compute_center_of_buoyancy(fcstd_path, z, pitch - angle_step, roll)
+    cob_plus = compute_center_of_buoyancy(hull, z, pitch + angle_step, roll)
+    cob_minus = compute_center_of_buoyancy(hull, z, pitch - angle_step, roll)
     r_plus = compute_residuals(cog_result, cob_plus, z, pitch + angle_step, roll)
     r_minus = compute_residuals(cog_result, cob_minus, z, pitch - angle_step, roll)
     J[:, 1] = (r_plus - r_minus) / (2 * angle_step)
 
     # Compute derivatives with respect to roll
-    cob_plus = compute_center_of_buoyancy(fcstd_path, z, pitch, roll + angle_step)
-    cob_minus = compute_center_of_buoyancy(fcstd_path, z, pitch, roll - angle_step)
+    cob_plus = compute_center_of_buoyancy(hull, z, pitch, roll + angle_step)
+    cob_minus = compute_center_of_buoyancy(hull, z, pitch, roll - angle_step)
     r_plus = compute_residuals(cog_result, cob_plus, z, pitch, roll + angle_step)
     r_minus = compute_residuals(cog_result, cob_minus, z, pitch, roll - angle_step)
     J[:, 2] = (r_plus - r_minus) / (2 * angle_step)
@@ -181,7 +181,7 @@ def compute_jacobian(fcstd_path: str, cog_result: dict,
     return J
 
 
-def estimate_initial_z(cog_result: dict, fcstd_path: str) -> float:
+def estimate_initial_z(cog_result: dict, hull: dict) -> float:
     """
     Estimate initial z displacement to get buoyancy roughly equal to weight.
 
@@ -194,7 +194,7 @@ def estimate_initial_z(cog_result: dict, fcstd_path: str) -> float:
 
     for _ in range(20):  # Binary search iterations
         z_mid = (z_min + z_max) / 2
-        cob = compute_center_of_buoyancy(fcstd_path, z_mid, 0, 0)
+        cob = compute_center_of_buoyancy(hull, z_mid, 0, 0)
         buoyancy_N = cob['buoyancy_force_N']
 
         if buoyancy_N < weight_N:
@@ -209,7 +209,7 @@ def estimate_initial_z(cog_result: dict, fcstd_path: str) -> float:
     return z_mid
 
 
-def solve_equilibrium(fcstd_path: str, cog_result: dict,
+def solve_equilibrium(hull: dict, cog_result: dict,
                       max_iterations: int = DEFAULT_MAX_ITERATIONS,
                       tolerance: float = DEFAULT_TOLERANCE,
                       verbose: bool = True) -> dict:
@@ -217,7 +217,7 @@ def solve_equilibrium(fcstd_path: str, cog_result: dict,
     Find equilibrium pose using Newton-Raphson iteration.
 
     Args:
-        fcstd_path: Path to FreeCAD design file
+        hull: Hull data from load_hull()
         cog_result: Result from compute_center_of_gravity
         max_iterations: Maximum Newton-Raphson iterations
         tolerance: Convergence tolerance for residuals
@@ -229,7 +229,7 @@ def solve_equilibrium(fcstd_path: str, cog_result: dict,
     # Initial guess
     if verbose:
         print("  Estimating initial z displacement...")
-    z = estimate_initial_z(cog_result, fcstd_path)
+    z = estimate_initial_z(cog_result, hull)
     pitch = 0.0
     roll = 0.0
 
@@ -241,7 +241,7 @@ def solve_equilibrium(fcstd_path: str, cog_result: dict,
 
     for iteration in range(max_iterations):
         # Compute CoB at current pose
-        cob_result = compute_center_of_buoyancy(fcstd_path, z, pitch, roll)
+        cob_result = compute_center_of_buoyancy(hull, z, pitch, roll)
 
         # Compute residuals (CoG is transformed to world frame internally)
         residuals = compute_residuals(cog_result, cob_result, z, pitch, roll)
@@ -283,7 +283,7 @@ def solve_equilibrium(fcstd_path: str, cog_result: dict,
             break
 
         # Compute Jacobian
-        J = compute_jacobian(fcstd_path, cog_result, z, pitch, roll)
+        J = compute_jacobian(hull, cog_result, z, pitch, roll)
 
         # Check if Jacobian is singular
         det = np.linalg.det(J)
@@ -334,7 +334,7 @@ def solve_equilibrium(fcstd_path: str, cog_result: dict,
             roll_new = roll + alpha * delta[2]
 
             # Evaluate residual at new point
-            cob_new = compute_center_of_buoyancy(fcstd_path, z_new, pitch_new, roll_new)
+            cob_new = compute_center_of_buoyancy(hull, z_new, pitch_new, roll_new)
             residuals_new = compute_residuals(cog_result, cob_new, z_new, pitch_new, roll_new)
             new_norm = np.linalg.norm(residuals_new)
 
@@ -366,7 +366,7 @@ def solve_equilibrium(fcstd_path: str, cog_result: dict,
         roll += alpha * delta[2]
 
     # Final CoB computation
-    final_cob = compute_center_of_buoyancy(fcstd_path, z, pitch, roll)
+    final_cob = compute_center_of_buoyancy(hull, z, pitch, roll)
     final_residuals = compute_residuals(cog_result, final_cob, z, pitch, roll)
 
     # Transform CoG to world frame for output

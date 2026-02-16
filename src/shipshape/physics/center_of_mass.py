@@ -13,20 +13,24 @@ Usage:
     from shipshape.physics.center_of_mass import compute_center_of_gravity
 
     # From FreeCAD file
+    import json
+    with open("constant/material/proa.json") as f:
+        materials = json.load(f)
     result = compute_center_of_gravity(
         fcstd_path="artifact/boat.design.FCStd",
-        materials_path="constant/material/proa.json"
+        materials=materials
     )
 
     # From mass artifact (faster)
+    with open("artifact/boat.mass.json") as f:
+        mass_data = json.load(f)
     result = compute_cog_from_mass_artifact(
-        mass_artifact_path="artifact/boat.mass.json",
+        mass_data=mass_data,
         fcstd_path="artifact/boat.design.FCStd"  # needed for positions
     )
 """
 
 import sys
-import json
 
 try:
     import FreeCAD as App
@@ -103,7 +107,7 @@ def _get_global_cog(obj) -> Base.Vector:
         return local_cog
 
 
-def compute_center_of_gravity(fcstd_path: str, materials_path: str) -> dict:
+def compute_center_of_gravity(fcstd_path: str, materials: dict) -> dict:
     """
     Compute the center of gravity from FreeCAD geometry and materials.
 
@@ -112,7 +116,7 @@ def compute_center_of_gravity(fcstd_path: str, materials_path: str) -> dict:
 
     Args:
         fcstd_path: Path to the FreeCAD design file
-        materials_path: Path to the materials JSON file
+        materials: The materials dict (full JSON object with a "materials" key)
 
     Returns:
         Dictionary with:
@@ -121,10 +125,7 @@ def compute_center_of_gravity(fcstd_path: str, materials_path: str) -> dict:
         - weight_N: Weight force in Newtons
         - components: Per-component breakdown with positions
     """
-    # Load materials
-    with open(materials_path, 'r') as f:
-        materials_data = json.load(f)
-    materials = materials_data["materials"]
+    materials = materials["materials"]
 
     # Open FreeCAD document
     doc = App.openDocument(fcstd_path)
@@ -200,7 +201,7 @@ def compute_center_of_gravity(fcstd_path: str, materials_path: str) -> dict:
     }
 
 
-def compute_cog_from_mass_artifact(mass_artifact_path: str, fcstd_path: str) -> dict:
+def compute_cog_from_mass_artifact(mass_data: dict, fcstd_path: str) -> dict:
     """
     Compute CoG using precomputed mass data and geometry positions.
 
@@ -208,15 +209,12 @@ def compute_cog_from_mass_artifact(mass_artifact_path: str, fcstd_path: str) -> 
     already computed. We just need to look up component positions.
 
     Args:
-        mass_artifact_path: Path to the mass.json artifact
+        mass_data: The already-loaded mass artifact dict
         fcstd_path: Path to the FreeCAD design file (for positions)
 
     Returns:
         Same structure as compute_center_of_gravity
     """
-    # Load mass artifact
-    with open(mass_artifact_path, 'r') as f:
-        mass_data = json.load(f)
 
     # Create a map from label to mass
     component_masses = {c['name']: c['mass_kg'] for c in mass_data['components']}
@@ -286,15 +284,15 @@ def compute_cog_from_mass_artifact(mass_artifact_path: str, fcstd_path: str) -> 
 
 
 # Convenience function for use in iterative solvers
-def compute_cog(fcstd_path: str, materials_path: str) -> dict:
+def compute_cog(fcstd_path: str, materials: dict) -> dict:
     """
     Shorthand for compute_center_of_gravity.
 
     Args:
         fcstd_path: Path to FreeCAD design file
-        materials_path: Path to materials JSON file
+        materials: The materials dict (full JSON object with a "materials" key)
 
     Returns:
         Same as compute_center_of_gravity
     """
-    return compute_center_of_gravity(fcstd_path, materials_path)
+    return compute_center_of_gravity(fcstd_path, materials)

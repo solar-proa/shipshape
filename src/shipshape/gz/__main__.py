@@ -28,6 +28,7 @@ except ImportError as e:
     print("This script requires FreeCAD (conda-forge or bundled)", file=sys.stderr)
     sys.exit(1)
 
+from shipshape.physics.center_of_buoyancy import load_hull
 from .compute import compute_gz_curve, plot_gz_curve
 
 
@@ -105,9 +106,14 @@ def main():
         if verbose and beam_m and loa_m:
             print(f"  Dimensions: LOA={loa_m:.1f}m, beam={beam_m:.1f}m")
 
+    # Load hull geometry (once, reused across all heel angles)
+    if verbose:
+        print("  Loading hull geometry...")
+    hull = load_hull(args.design)
+
     # Compute GZ curve
     result = compute_gz_curve(
-        args.design,
+        hull,
         buoyancy_result,
         heel_angles=heel_angles,
         beam_m=beam_m,

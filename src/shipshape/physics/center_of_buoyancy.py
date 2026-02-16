@@ -18,10 +18,11 @@ Coordinate system (matching CAD model):
     Roll: rotation about Y axis (positive = starboard down)
 
 Usage:
-    from shipshape.physics.center_of_buoyancy import compute_center_of_buoyancy
+    from shipshape.physics.center_of_buoyancy import load_hull, compute_center_of_buoyancy
 
+    hull = load_hull("artifact/boat.design.FCStd")  # once per run
     result = compute_center_of_buoyancy(
-        fcstd_path="artifact/boat.design.FCStd",
+        hull,
         z_displacement=-100,  # mm below water
         pitch_deg=2.0,        # bow up positive
         roll_deg=0.5          # starboard down positive
@@ -259,51 +260,39 @@ def compute_submerged_volume(shape: Part.Shape, water_level_z: float = 0.0) -> d
     }
 
 
-def compute_center_of_buoyancy(fcstd_path: str, z_displacement: float = 0.0,
-                                pitch_deg: float = 0.0, roll_deg: float = 0.0,
-                                water_level_z: float = 0.0,
-                                hull_components: list = None) -> dict:
+def load_hull(fcstd_path: str, hull_components: list = None) -> dict:
     """
-    Compute the center of buoyancy for a hull at a given pose.
+    Load hull geometry from a FreeCAD document.
 
-    This is the main entry point for buoyancy calculations. It:
-    1. Loads the FreeCAD document
-    2. Collects hull component shapes (vaka, ama, etc.)
-    3. Transforms them according to the pose
-    4. Computes the submerged volume and its centroid
+    Opens the document, extracts hull component shapes (with .copy() so they
+    are independent of the document), computes rotation center and reference
+    points, then closes the document.
+
+    This should be called **once** per run. The returned dict is passed to
+    compute_center_of_buoyancy() which can then be called many times without
+    any file I/O.
 
     Args:
         fcstd_path: Path to the FreeCAD design file
-        z_displacement: Vertical displacement of the boat in mm (negative = sink)
-        pitch_deg: Pitch angle in degrees (positive = bow up)
-        roll_deg: Roll angle in degrees (positive = starboard down)
-        water_level_z: Z coordinate of the water surface (default: 0)
         hull_components: List of component name patterns to include.
-                        Defaults to DEFAULT_HULL_COMPONENTS (see top of module).
-                        Components are matched case-insensitively against object labels.
+                        Defaults to DEFAULT_HULL_COMPONENTS.
 
     Returns:
         Dictionary with:
-        - CoB: {"x", "y", "z"} center of buoyancy in mm (world frame)
-        - submerged_volume_mm3: Total submerged volume in mm³
-        - submerged_volume_liters: Total submerged volume in liters
-        - buoyancy_force_N: Buoyancy force in Newtons (saltwater)
-        - displacement_kg: Water displaced in kg (saltwater)
-        - pose: The input pose parameters
-        - components: Per-component breakdown
+        - hull_shapes: list of {"label", "shape", "pattern"} with copied shapes
+        - rotation_center: Base.Vector for pose transformations
+        - ama_ref_body: ama reference point in body frame
+        - vaka_ref_body: vaka reference point in body frame
+        - total_ama_volume_mm3: total ama volume
+        - total_vaka_volume_mm3: total vaka volume
     """
     if hull_components is None:
         hull_components = DEFAULT_HULL_COMPONENTS
 
-    # Open the FreeCAD document
     doc = App.openDocument(fcstd_path)
-
-    # Collect all objects
     all_objects = _get_all_objects(doc.Objects)
 
-    # Find hull components by matching against labels
     hull_shapes = []
-    component_results = []
     processed_labels = set()
 
     for obj in all_objects:
@@ -315,7 +304,6 @@ def compute_center_of_buoyancy(fcstd_path: str, z_displacement: float = 0.0,
 
         label_lower = obj.Label.lower()
 
-        # Check if this object matches any hull component pattern
         is_hull = False
         matched_pattern = None
         for pattern in hull_components:
@@ -330,25 +318,19 @@ def compute_center_of_buoyancy(fcstd_path: str, z_displacement: float = 0.0,
         processed_labels.add(obj.Label)
         hull_shapes.append({
             "label": obj.Label,
-            "shape": obj.Shape,
+            "shape": obj.Shape.copy(),
             "pattern": matched_pattern
         })
 
     if not hull_shapes:
         App.closeDocument(doc.Name)
         return {
-            "error": "No hull components found",
-            "CoB": {"x": 0.0, "y": 0.0, "z": 0.0},
-            "submerged_volume_mm3": 0.0,
-            "submerged_volume_liters": 0.0,
-            "buoyancy_force_N": 0.0,
-            "displacement_kg": 0.0,
-            "pose": {
-                "z_offset_mm": z_displacement,
-                "pitch_deg": pitch_deg,
-                "roll_deg": roll_deg
-            },
-            "components": []
+            "hull_shapes": [],
+            "rotation_center": Base.Vector(0, 0, 0),
+            "ama_ref_body": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "vaka_ref_body": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "total_ama_volume_mm3": 0.0,
+            "total_vaka_volume_mm3": 0.0,
         }
 
     # Compute hull reference points (body frame) from original geometry
@@ -371,7 +353,6 @@ def compute_center_of_buoyancy(fcstd_path: str, z_displacement: float = 0.0,
             if vaka_z_min is None or bbox.ZMin < vaka_z_min:
                 vaka_z_min = bbox.ZMin
 
-    # Hull reference points in body frame (before transformation)
     ama_ref_body = {
         "x": 0.0,
         "y": 0.0,
@@ -401,7 +382,7 @@ def compute_center_of_buoyancy(fcstd_path: str, z_displacement: float = 0.0,
     else:
         rotation_center = Base.Vector(0, 0, 0)
 
-    # Compute total volumes per hull type (before transformation)
+    # Compute total volumes per hull type
     total_ama_volume_mm3 = 0.0
     total_vaka_volume_mm3 = 0.0
     for hs in hull_shapes:
@@ -411,9 +392,93 @@ def compute_center_of_buoyancy(fcstd_path: str, z_displacement: float = 0.0,
         else:
             total_vaka_volume_mm3 += vol
 
+    App.closeDocument(doc.Name)
+
+    return {
+        "hull_shapes": hull_shapes,
+        "rotation_center": rotation_center,
+        "ama_ref_body": ama_ref_body,
+        "vaka_ref_body": vaka_ref_body,
+        "total_ama_volume_mm3": total_ama_volume_mm3,
+        "total_vaka_volume_mm3": total_vaka_volume_mm3,
+    }
+
+
+def _transform_ref_point(ref_body, z_disp, pitch, roll, rot_center):
+    """Transform a reference point from body to world frame."""
+    x = ref_body["x"] - rot_center.x
+    y = ref_body["y"] - rot_center.y
+    z = ref_body["z"] - rot_center.z
+
+    pitch_rad = math.radians(pitch)
+    roll_rad = math.radians(roll)
+    cos_p, sin_p = math.cos(pitch_rad), math.sin(pitch_rad)
+    cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
+
+    x_new = cos_r * x + sin_r * sin_p * y + sin_r * cos_p * z
+    y_new = cos_p * y - sin_p * z
+    z_new = -sin_r * x + cos_r * sin_p * y + cos_r * cos_p * z
+
+    return {
+        "x": round(x_new + rot_center.x, 2),
+        "y": round(y_new + rot_center.y, 2),
+        "z": round(z_new + rot_center.z + z_disp, 2)
+    }
+
+
+def compute_center_of_buoyancy(hull: dict, z_displacement: float = 0.0,
+                                pitch_deg: float = 0.0, roll_deg: float = 0.0,
+                                water_level_z: float = 0.0) -> dict:
+    """
+    Compute the center of buoyancy for a hull at a given pose.
+
+    Pure geometry computation — no file I/O. The hull dict is obtained from
+    load_hull() and can be reused across many calls.
+
+    Args:
+        hull: Hull data from load_hull()
+        z_displacement: Vertical displacement of the boat in mm (negative = sink)
+        pitch_deg: Pitch angle in degrees (positive = bow up)
+        roll_deg: Roll angle in degrees (positive = starboard down)
+        water_level_z: Z coordinate of the water surface (default: 0)
+
+    Returns:
+        Dictionary with:
+        - CoB: {"x", "y", "z"} center of buoyancy in mm (world frame)
+        - submerged_volume_mm3: Total submerged volume in mm³
+        - submerged_volume_liters: Total submerged volume in liters
+        - buoyancy_force_N: Buoyancy force in Newtons (saltwater)
+        - displacement_kg: Water displaced in kg (saltwater)
+        - pose: The input pose parameters
+        - components: Per-component breakdown
+    """
+    hull_shapes = hull["hull_shapes"]
+    rotation_center = hull["rotation_center"]
+    ama_ref_body = hull["ama_ref_body"]
+    vaka_ref_body = hull["vaka_ref_body"]
+    total_ama_volume_mm3 = hull["total_ama_volume_mm3"]
+    total_vaka_volume_mm3 = hull["total_vaka_volume_mm3"]
+
+    if not hull_shapes:
+        return {
+            "error": "No hull components found",
+            "CoB": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "submerged_volume_mm3": 0.0,
+            "submerged_volume_liters": 0.0,
+            "buoyancy_force_N": 0.0,
+            "displacement_kg": 0.0,
+            "pose": {
+                "z_offset_mm": z_displacement,
+                "pitch_deg": pitch_deg,
+                "roll_deg": roll_deg
+            },
+            "components": []
+        }
+
     # Transform each hull shape and compute submerged volume
     total_submerged_volume = 0.0
     weighted_cob = Base.Vector(0, 0, 0)
+    component_results = []
 
     for hs in hull_shapes:
         # Transform the shape
@@ -470,35 +535,9 @@ def compute_center_of_buoyancy(fcstd_path: str, z_displacement: float = 0.0,
     displacement_kg = volume_m3 * SALTWATER_DENSITY_KG_M3
     buoyancy_force_N = displacement_kg * GRAVITY_M_S2
 
-    App.closeDocument(doc.Name)
-
     # Transform hull reference points to world frame
-    def transform_ref_point(ref_body, z_disp, pitch, roll, rot_center):
-        """Transform a reference point from body to world frame."""
-        # Translate to rotation center
-        x = ref_body["x"] - rot_center.x
-        y = ref_body["y"] - rot_center.y
-        z = ref_body["z"] - rot_center.z
-
-        # Apply rotation (R = Ry(roll) * Rx(pitch))
-        pitch_rad = math.radians(pitch)
-        roll_rad = math.radians(roll)
-        cos_p, sin_p = math.cos(pitch_rad), math.sin(pitch_rad)
-        cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
-
-        x_new = cos_r * x + sin_r * sin_p * y + sin_r * cos_p * z
-        y_new = cos_p * y - sin_p * z
-        z_new = -sin_r * x + cos_r * sin_p * y + cos_r * cos_p * z
-
-        # Translate back and apply z displacement
-        return {
-            "x": round(x_new + rot_center.x, 2),
-            "y": round(y_new + rot_center.y, 2),
-            "z": round(z_new + rot_center.z + z_disp, 2)
-        }
-
-    ama_ref_world = transform_ref_point(ama_ref_body, z_displacement, pitch_deg, roll_deg, rotation_center)
-    vaka_ref_world = transform_ref_point(vaka_ref_body, z_displacement, pitch_deg, roll_deg, rotation_center)
+    ama_ref_world = _transform_ref_point(ama_ref_body, z_displacement, pitch_deg, roll_deg, rotation_center)
+    vaka_ref_world = _transform_ref_point(vaka_ref_body, z_displacement, pitch_deg, roll_deg, rotation_center)
 
     return {
         "CoB": combined_cob,
@@ -539,12 +578,12 @@ def compute_center_of_buoyancy(fcstd_path: str, z_displacement: float = 0.0,
 
 
 # Convenience function for use in iterative solvers
-def compute_cob(fcstd_path: str, z: float, pitch: float, roll: float) -> dict:
+def compute_cob(hull: dict, z: float, pitch: float, roll: float) -> dict:
     """
     Shorthand for compute_center_of_buoyancy with minimal arguments.
 
     Args:
-        fcstd_path: Path to FreeCAD design file
+        hull: Hull data from load_hull()
         z: Vertical displacement in mm
         pitch: Pitch angle in degrees
         roll: Roll angle in degrees
@@ -553,7 +592,7 @@ def compute_cob(fcstd_path: str, z: float, pitch: float, roll: float) -> dict:
         Same as compute_center_of_buoyancy
     """
     return compute_center_of_buoyancy(
-        fcstd_path=fcstd_path,
+        hull=hull,
         z_displacement=z,
         pitch_deg=pitch,
         roll_deg=roll

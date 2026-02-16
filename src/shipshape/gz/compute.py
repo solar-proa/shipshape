@@ -169,7 +169,7 @@ def compute_gm_from_gz_curve(gz_data: list, equilibrium_roll_deg: float = 0.0) -
     }
 
 
-def find_equilibrium_z_at_heel(fcstd_path: str, target_weight_N: float,
+def find_equilibrium_z_at_heel(hull: dict, target_weight_N: float,
                                pitch_deg: float, roll_deg: float,
                                z_initial: float = -500.0,
                                tolerance: float = 0.01,
@@ -180,7 +180,7 @@ def find_equilibrium_z_at_heel(fcstd_path: str, target_weight_N: float,
     Uses bisection to find z where buoyancy = weight.
 
     Args:
-        fcstd_path: Path to FreeCAD design file
+        hull: Hull data from load_hull()
         target_weight_N: Target weight (buoyancy must equal this)
         pitch_deg: Pitch angle (usually 0 for GZ curve)
         roll_deg: Roll (heel) angle
@@ -195,8 +195,8 @@ def find_equilibrium_z_at_heel(fcstd_path: str, target_weight_N: float,
     z_min, z_max = -5000.0, 500.0  # mm
 
     # First, bracket the solution
-    cob_min = compute_center_of_buoyancy(fcstd_path, z_min, pitch_deg, roll_deg)
-    cob_max = compute_center_of_buoyancy(fcstd_path, z_max, pitch_deg, roll_deg)
+    cob_min = compute_center_of_buoyancy(hull, z_min, pitch_deg, roll_deg)
+    cob_max = compute_center_of_buoyancy(hull, z_max, pitch_deg, roll_deg)
 
     buoyancy_min = cob_min['buoyancy_force_N']
     buoyancy_max = cob_max['buoyancy_force_N']
@@ -221,7 +221,7 @@ def find_equilibrium_z_at_heel(fcstd_path: str, target_weight_N: float,
     # Bisection search
     for iteration in range(max_iterations):
         z_mid = (z_min + z_max) / 2
-        cob_mid = compute_center_of_buoyancy(fcstd_path, z_mid, pitch_deg, roll_deg)
+        cob_mid = compute_center_of_buoyancy(hull, z_mid, pitch_deg, roll_deg)
         buoyancy_mid = cob_mid['buoyancy_force_N']
 
         force_error = abs(buoyancy_mid - target_weight_N) / target_weight_N
@@ -251,7 +251,7 @@ def find_equilibrium_z_at_heel(fcstd_path: str, target_weight_N: float,
     }
 
 
-def compute_gz_curve(fcstd_path: str, buoyancy_result: dict,
+def compute_gz_curve(hull: dict, buoyancy_result: dict,
                      heel_angles: list = None,
                      beam_m: float = None, loa_m: float = None,
                      verbose: bool = True) -> dict:
@@ -264,7 +264,7 @@ def compute_gz_curve(fcstd_path: str, buoyancy_result: dict,
     3. Compute GZ = CoB_x - CoG_x (transverse separation)
 
     Args:
-        fcstd_path: Path to FreeCAD design file
+        hull: Hull data from load_hull()
         buoyancy_result: Result from buoyancy equilibrium solver
         heel_angles: List of heel angles in degrees (default: -20 to 60)
         beam_m: Overall beam in meters (for period estimates)
@@ -300,7 +300,7 @@ def compute_gz_curve(fcstd_path: str, buoyancy_result: dict,
 
         # Find equilibrium z at this heel angle
         result = find_equilibrium_z_at_heel(
-            fcstd_path, weight_N,
+            hull, weight_N,
             pitch_deg=0.0,
             roll_deg=roll_deg,
             z_initial=eq_z

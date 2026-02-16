@@ -4,7 +4,6 @@ Mass analysis - computes mass, volume, and component breakdown from FreeCAD mode
 """
 
 import sys
-import json
 
 try:
     import FreeCAD as App
@@ -14,23 +13,20 @@ except ImportError as e:
     sys.exit(1)
 
 
-def analyze_mass(fcstd_path: str, materials_path: str) -> dict:
+def analyze_mass(fcstd_path: str, materials: dict) -> dict:
     """
     Analyze mass properties of a FreeCAD model.
 
     Args:
         fcstd_path: Path to the FreeCAD design file
-        materials_path: Path to the materials JSON file
+        materials: The materials dict (full JSON object with a "materials" key)
 
     Returns:
         Dictionary with mass analysis results
     """
     doc = App.openDocument(fcstd_path)
 
-    with open(materials_path, 'r') as m:
-        materials_data = json.load(m)
-
-    materials = materials_data["materials"]
+    materials = materials["materials"]
 
     material_weights = {}
     material_volumes = {}
