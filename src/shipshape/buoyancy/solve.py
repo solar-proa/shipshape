@@ -291,14 +291,21 @@ def solve_equilibrium(hull: dict, cog_result: dict,
             # Newton-Raphson update
             delta = np.linalg.solve(J, -residuals)
 
-        # Freeze DOFs whose residual is already below tolerance.
+        # Freeze DOFs whose residual is negligibly small (10x below tolerance).
         # Prevents cross-coupling from corrupting converged components
         # (e.g. roll=0 on a symmetric hull getting kicked by a large pitch error).
+        # The tight threshold (tolerance/10) ensures only genuinely converged DOFs
+        # are frozen, avoiding premature freezing with loose tolerances.
         dof_names = ['z', 'pitch', 'roll']
+        freeze_tol = tolerance * 0.1
+        freeze = [abs(residuals[i]) < freeze_tol for i in range(3)]
+        if all(freeze):
+            worst = int(np.argmax(np.abs(residuals)))
+            freeze[worst] = False
         for i in range(3):
-            if abs(residuals[i]) < tolerance and abs(delta[i]) > 0:
+            if freeze[i] and abs(delta[i]) > 0:
                 if verbose:
-                    print(f"    Freezing {dof_names[i]} (residual {residuals[i]:.6f} already below tolerance)")
+                    print(f"    Freezing {dof_names[i]} (residual {residuals[i]:.6f} negligible)")
                 delta[i] = 0.0
 
         # Limit maximum step size for stability
