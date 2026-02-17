@@ -25,7 +25,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-diagrams = ["matplotlib"]
 geometry = ["numpy"]  # FreeCAD required but not pip-installable (use conda-forge)
 
 [project.urls]

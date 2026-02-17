@@ -13,7 +13,6 @@ Shipshape provides boat-design-independent tools for naval engineering analysis.
 | `buoyancy` | Find equilibrium pose (sinkage, pitch, roll) using Newton-Raphson iteration | Yes |
 | `gz` | Compute the GZ righting-arm curve over a range of heel angles | Yes |
 | `physics` | Center-of-gravity and center-of-buoyancy calculations | Yes |
-| `validate_structure` | Structural validation: aka, mast, spine, brace, gunwale, wave slam, capsize analysis | No |
 
 ## Installation
 
@@ -25,12 +24,6 @@ For modules that require FreeCAD geometry (mass, buoyancy, gz, physics), install
 
 ```bash
 conda install -c conda-forge freecad
-```
-
-For diagram generation (validate_structure plots):
-
-```bash
-pip install shipshape[diagrams]
 ```
 
 ## CLI Usage
@@ -77,16 +70,6 @@ python -m shipshape.gz \
     --buoyancy artifact/boat.buoyancy.json \
     --output artifact/boat.gz.json \
     --output-png artifact/boat.gz.png
-```
-
-### validate_structure
-
-```bash
-python -m shipshape.validate_structure \
-    --parameters artifact/parameters.json \
-    --mass artifact/boat.mass.json \
-    --gz artifact/boat.gz.json \
-    --output artifact/boat.validation.json
 ```
 
 ## License
