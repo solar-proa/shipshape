@@ -408,16 +408,29 @@ def compute_gz_curve(hull: dict, buoyancy_result: dict,
                     capsize_angle = angle1
                 break
 
-        # Detect ama engagement angle
+        # Detect ama engagement angle via inflection point in CoB X curve.
+        # As the boat heels towards the ama, CoB shifts rapidly laterally
+        # while the ama submerges, then the rate drops sharply once the ama
+        # is fully engaged. We detect this as the largest drop in the rate
+        # of lateral CoB shift (most negative second derivative).
         ama_engagement_angle = None
-        cob_x_values = [p['cob_x_mm'] for p in converged_points]
-        for i in range(1, len(converged_points)):
-            delta_cob_x = cob_x_values[i] - cob_x_values[i-1]
-            delta_angle = converged_points[i]['heel_deg'] - converged_points[i-1]['heel_deg']
-            if delta_angle > 0 and delta_cob_x / delta_angle > 500:
-                ama_engagement_angle = (converged_points[i-1]['heel_deg'] +
-                                        converged_points[i]['heel_deg']) / 2
-                break
+        positive_points = [p for p in converged_points if p['heel_deg'] >= 0]
+        if len(positive_points) >= 3:
+            rates = []
+            for i in range(1, len(positive_points)):
+                dc = positive_points[i]['cob_x_mm'] - positive_points[i-1]['cob_x_mm']
+                da = positive_points[i]['heel_deg'] - positive_points[i-1]['heel_deg']
+                if da > 0:
+                    rates.append((positive_points[i-1]['heel_deg'],
+                                  positive_points[i]['heel_deg'], dc / da))
+            max_drop = 0
+            for i in range(1, len(rates)):
+                drop = rates[i-1][2] - rates[i][2]
+                if drop > max_drop:
+                    max_drop = drop
+                    ama_engagement_angle = (rates[i-1][1] + rates[i][1]) / 2
+            if max_drop < 50:
+                ama_engagement_angle = None
 
         summary = {
             'max_gz_m': round(max_gz, 4),
