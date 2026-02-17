@@ -21,13 +21,6 @@ import os
 import json
 import argparse
 
-try:
-    import FreeCAD as App
-except ImportError as e:
-    print(f"ERROR: {e}", file=sys.stderr)
-    print("This script requires FreeCAD (conda-forge or bundled)", file=sys.stderr)
-    sys.exit(1)
-
 from shipshape.physics.center_of_buoyancy import load_hull
 from .compute import compute_gz_curve, plot_gz_curve
 

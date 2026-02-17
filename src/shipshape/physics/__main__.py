@@ -19,13 +19,6 @@ import os
 import json
 import argparse
 
-try:
-    import FreeCAD as App
-except ImportError as e:
-    print(f"ERROR: {e}", file=sys.stderr)
-    print("This script requires FreeCAD (conda-forge or bundled)", file=sys.stderr)
-    sys.exit(1)
-
 from shipshape.physics.center_of_mass import compute_center_of_gravity, compute_cog_from_mass_artifact
 from shipshape.physics.center_of_buoyancy import load_hull, compute_center_of_buoyancy
 

@@ -23,6 +23,12 @@ from .center_of_mass import (
     compute_cog_from_mass_artifact,
 )
 
+from .geometry import (
+    set_backend,
+    get_backend,
+    get_reader,
+)
+
 __all__ = [
     # Center of Buoyancy
     'load_hull',
@@ -36,4 +42,8 @@ __all__ = [
     'compute_center_of_gravity',
     'compute_cog',
     'compute_cog_from_mass_artifact',
+    # Geometry backend
+    'set_backend',
+    'get_backend',
+    'get_reader',
 ]

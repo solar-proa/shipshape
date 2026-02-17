@@ -6,13 +6,13 @@ This module provides functions to compute the center of gravity (CoG) of a
 boat from its component masses and positions.
 
 There are two approaches:
-1. From FreeCAD geometry + materials: Compute CoG directly from shapes
+1. From CAD geometry + materials: Compute CoG directly from shapes
 2. From mass artifact: Load precomputed mass data (faster for iteration)
 
 Usage:
     from shipshape.physics.center_of_mass import compute_center_of_gravity
 
-    # From FreeCAD file
+    # From CAD file
     import json
     with open("constant/material/proa.json") as f:
         materials = json.load(f)
@@ -30,30 +30,11 @@ Usage:
     )
 """
 
-import sys
-
-try:
-    import FreeCAD as App
-    import Part
-    from FreeCAD import Base
-except ImportError as e:
-    print(f"ERROR: {e}", file=sys.stderr)
-    print("This module requires FreeCAD (conda-forge or bundled)", file=sys.stderr)
-    sys.exit(1)
+from .geometry import get_backend, get_reader
 
 
 # Physical constants
 GRAVITY_M_S2 = 9.81  # m/s²
-
-
-def _get_all_objects(obj_list):
-    """Recursively get all objects including those in groups."""
-    all_objs = []
-    for obj in obj_list:
-        all_objs.append(obj)
-        if hasattr(obj, 'Group'):
-            all_objs.extend(_get_all_objects(obj.Group))
-    return all_objs
 
 
 def _extract_material_from_label(label: str) -> str:
@@ -70,52 +51,15 @@ def _extract_material_from_label(label: str) -> str:
     return None
 
 
-def _get_global_cog(obj) -> Base.Vector:
-    """
-    Get the center of gravity in world (global) coordinates.
-
-    There are two cases in the design:
-    1. Shape created at origin, then positioned via Placement (e.g., Mast in Rig group)
-       - Shape bbox center is near origin in X and Y
-       - We need to apply Placement to get world coords
-
-    2. Shape created at final world position (e.g., Hull, Ama parts)
-       - Shape bbox is already at final position (far from origin)
-       - Placement should NOT be applied (shape CoG is already in world coords)
-
-    We detect case 2 by checking if the shape bbox center is far from origin.
-    """
-    local_cog = obj.Shape.CenterOfGravity
-    bbox = obj.Shape.BoundBox
-
-    # Check if shape is already at world position (bbox center far from origin in X or Y)
-    bbox_center_x = (bbox.XMin + bbox.XMax) / 2
-    bbox_center_y = (bbox.YMin + bbox.YMax) / 2
-    shape_at_origin = abs(bbox_center_x) < 500 and abs(bbox_center_y) < 500
-
-    if shape_at_origin:
-        # Shape is at origin - apply placement to get world coords
-        if hasattr(obj, 'getGlobalPlacement'):
-            global_placement = obj.getGlobalPlacement()
-        else:
-            global_placement = obj.Placement if hasattr(obj, 'Placement') else App.Placement()
-
-        world_cog = global_placement.multVec(local_cog)
-        return world_cog
-    else:
-        # Shape already at world position - use CoG directly
-        return local_cog
-
-
 def compute_center_of_gravity(fcstd_path: str, materials: dict) -> dict:
     """
-    Compute the center of gravity from FreeCAD geometry and materials.
+    Compute the center of gravity from CAD geometry and materials.
 
     This calculates CoG by computing the mass-weighted centroid of all
     components, where mass is determined from volume x density.
 
     Args:
-        fcstd_path: Path to the FreeCAD design file
+        fcstd_path: Path to the CAD design file
         materials: The materials dict (full JSON object with a "materials" key)
 
     Returns:
@@ -125,67 +69,61 @@ def compute_center_of_gravity(fcstd_path: str, materials: dict) -> dict:
         - weight_N: Weight force in Newtons
         - components: Per-component breakdown with positions
     """
+    geo = get_backend()
+    reader = get_reader()
     materials = materials["materials"]
 
-    # Open FreeCAD document
-    doc = App.openDocument(fcstd_path)
-    all_objects = _get_all_objects(doc.Objects)
+    doc = reader.open(fcstd_path)
+    all_objects = reader.get_objects(doc)
 
-    # Compute mass and CoG for each component
     total_mass = 0.0
-    weighted_position = Base.Vector(0, 0, 0)
+    wp_x, wp_y, wp_z = 0.0, 0.0, 0.0
     component_results = []
     processed_labels = set()
 
     for obj in all_objects:
-        if not hasattr(obj, 'Shape') or obj.Shape.isNull():
+        if not obj["has_shape"] or obj["global_cog"] is None:
             continue
 
-        if obj.Label in processed_labels:
+        if obj["label"] in processed_labels:
             continue
 
-        # Get material from label
-        mat_key = _extract_material_from_label(obj.Label)
+        mat_key = _extract_material_from_label(obj["label"])
         if not mat_key or mat_key not in materials:
             continue
 
         mat = materials[mat_key]
-        volume_m3 = obj.Shape.Volume / 1e9  # mm³ to m³
+        volume_m3 = geo.volume(obj["shape"]) / 1e9  # mm³ to m³
         mass_kg = volume_m3 * mat['density_kg_m3']
 
-        # Get center of mass in world coordinates
-        cog = _get_global_cog(obj)
+        cog_x, cog_y, cog_z = obj["global_cog"]
 
         component_results.append({
-            "label": obj.Label,
+            "label": obj["label"],
             "material": mat['name'],
             "mass_kg": round(mass_kg, 4),
             "volume_liters": round(volume_m3 * 1000, 4),
             "CoG": {
-                "x": round(cog.x, 2),
-                "y": round(cog.y, 2),
-                "z": round(cog.z, 2)
+                "x": round(cog_x, 2),
+                "y": round(cog_y, 2),
+                "z": round(cog_z, 2)
             }
         })
 
-        # Accumulate for total CoG
         total_mass += mass_kg
-        weighted_position += Base.Vector(
-            cog.x * mass_kg,
-            cog.y * mass_kg,
-            cog.z * mass_kg
-        )
+        wp_x += cog_x * mass_kg
+        wp_y += cog_y * mass_kg
+        wp_z += cog_z * mass_kg
 
-        processed_labels.add(obj.Label)
+        processed_labels.add(obj["label"])
 
-    App.closeDocument(doc.Name)
+    reader.close(doc)
 
-    # Compute combined center of gravity
     if total_mass > 1e-6:
         combined_cog = {
-            "x": round(weighted_position.x / total_mass, 2),
-            "y": round(weighted_position.y / total_mass, 2),
-            "z": round(weighted_position.z / total_mass, 2)
+            "x": round(wp_x / total_mass, 2),
+            "y": round(wp_y / total_mass, 2),
+            "z": round(wp_z / total_mass, 2)
         }
     else:
         combined_cog = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -210,64 +148,60 @@ def compute_cog_from_mass_artifact(mass_data: dict, fcstd_path: str) -> dict:
 
     Args:
         mass_data: The already-loaded mass artifact dict
-        fcstd_path: Path to the FreeCAD design file (for positions)
+        fcstd_path: Path to the CAD design file (for positions)
 
     Returns:
         Same structure as compute_center_of_gravity
     """
+    reader = get_reader()
 
-    # Create a map from label to mass
     component_masses = {c['name']: c['mass_kg'] for c in mass_data['components']}
 
-    # Open FreeCAD document to get positions
-    doc = App.openDocument(fcstd_path)
-    all_objects = _get_all_objects(doc.Objects)
+    doc = reader.open(fcstd_path)
+    all_objects = reader.get_objects(doc)
 
-    # Compute CoG using masses from artifact and positions from geometry
     total_mass = 0.0
-    weighted_position = Base.Vector(0, 0, 0)
+    wp_x, wp_y, wp_z = 0.0, 0.0, 0.0
     component_results = []
     processed_labels = set()
 
     for obj in all_objects:
-        if not hasattr(obj, 'Shape') or obj.Shape.isNull():
+        if not obj["has_shape"] or obj["global_cog"] is None:
             continue
 
-        if obj.Label in processed_labels:
+        if obj["label"] in processed_labels:
             continue
 
-        if obj.Label not in component_masses:
+        if obj["label"] not in component_masses:
             continue
 
-        mass_kg = component_masses[obj.Label]
-        cog = _get_global_cog(obj)
+        mass_kg = component_masses[obj["label"]]
+        cog_x, cog_y, cog_z = obj["global_cog"]
 
         component_results.append({
-            "label": obj.Label,
+            "label": obj["label"],
             "mass_kg": round(mass_kg, 4),
             "CoG": {
-                "x": round(cog.x, 2),
-                "y": round(cog.y, 2),
-                "z": round(cog.z, 2)
+                "x": round(cog_x, 2),
+                "y": round(cog_y, 2),
+                "z": round(cog_z, 2)
             }
         })
 
         total_mass += mass_kg
-        weighted_position += Base.Vector(
-            cog.x * mass_kg,
-            cog.y * mass_kg,
-            cog.z * mass_kg
-        )
+        wp_x += cog_x * mass_kg
+        wp_y += cog_y * mass_kg
+        wp_z += cog_z * mass_kg
 
-        processed_labels.add(obj.Label)
+        processed_labels.add(obj["label"])
 
-    App.closeDocument(doc.Name)
+    reader.close(doc)
 
     if total_mass > 1e-6:
         combined_cog = {
-            "x": round(weighted_position.x / total_mass, 2),
-            "y": round(weighted_position.y / total_mass, 2),
-            "z": round(weighted_position.z / total_mass, 2)
+            "x": round(wp_x / total_mass, 2),
+            "y": round(wp_y / total_mass, 2),
+            "z": round(wp_z / total_mass, 2)
         }
     else:
         combined_cog = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -289,7 +223,7 @@ def compute_cog(fcstd_path: str, materials: dict) -> dict:
     Shorthand for compute_center_of_gravity.
 
     Args:
-        fcstd_path: Path to FreeCAD design file
+        fcstd_path: Path to CAD design file
         materials: The materials dict (full JSON object with a "materials" key)
 
     Returns:

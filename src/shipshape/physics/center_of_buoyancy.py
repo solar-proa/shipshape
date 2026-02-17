@@ -35,17 +35,9 @@ Usage:
     # }
 """
 
-import sys
 import math
 
-try:
-    import FreeCAD as App
-    import Part
-    from FreeCAD import Base
-except ImportError as e:
-    print(f"ERROR: {e}", file=sys.stderr)
-    print("This module requires FreeCAD (conda-forge or bundled)", file=sys.stderr)
-    sys.exit(1)
+from .geometry import get_backend, get_reader
 
 
 # Physical constants
@@ -96,19 +88,9 @@ DEFAULT_HULL_COMPONENTS = [
 ]
 
 
-def _get_all_objects(obj_list):
-    """Recursively get all objects including those in groups."""
-    all_objs = []
-    for obj in obj_list:
-        all_objs.append(obj)
-        if hasattr(obj, 'Group'):
-            all_objs.extend(_get_all_objects(obj.Group))
-    return all_objs
-
-
-def _make_rotation_matrix(pitch_deg: float, roll_deg: float, center: Base.Vector) -> Base.Matrix:
+def _make_rotation_matrix(pitch_deg: float, roll_deg: float) -> list[list[float]]:
     """
-    Create a rotation matrix for pitch and roll about a center point.
+    Create a 4×4 rotation matrix for pitch and roll.
 
     Coordinate system (matching CAD model):
         X: transversal (side-to-side)
@@ -118,107 +100,96 @@ def _make_rotation_matrix(pitch_deg: float, roll_deg: float, center: Base.Vector
     Pitch: rotation about the X axis (positive = bow up)
     Roll: rotation about the Y axis (positive = starboard down / port up)
 
-    The rotation is applied about the given center point.
+    Combined rotation: R = Ry(roll) * Rx(pitch)
     """
-    # Convert to radians
     pitch_rad = math.radians(pitch_deg)
     roll_rad = math.radians(roll_deg)
 
-    # Rotation about X axis (pitch - bow up/down)
     cos_p = math.cos(pitch_rad)
     sin_p = math.sin(pitch_rad)
-
-    # Rotation about Y axis (roll - heel)
     cos_r = math.cos(roll_rad)
     sin_r = math.sin(roll_rad)
 
-    # Combined rotation matrix: R = Ry(roll) * Rx(pitch)
-    # This applies pitch first, then roll
-    matrix = Base.Matrix(
-        cos_r,              sin_r * sin_p,      sin_r * cos_p,      0,
-        0,                  cos_p,              -sin_p,             0,
-        -sin_r,             cos_r * sin_p,      cos_r * cos_p,      0,
-        0,                  0,                  0,                  1
-    )
-
-    return matrix
+    return [
+        [cos_r,   sin_r * sin_p,  sin_r * cos_p,  0],
+        [0,       cos_p,          -sin_p,          0],
+        [-sin_r,  cos_r * sin_p,  cos_r * cos_p,  0],
+        [0,       0,              0,               1],
+    ]
 
 
-def transform_shape(shape: Part.Shape, z_displacement: float, pitch_deg: float,
-                   roll_deg: float, rotation_center: Base.Vector = None) -> Part.Shape:
+def transform_shape(shape, z_displacement: float, pitch_deg: float,
+                    roll_deg: float, rotation_center=None):
     """
     Transform a shape by applying z displacement and pitch/roll rotations.
 
     Args:
-        shape: The FreeCAD shape to transform
+        shape: The shape to transform (opaque backend object)
         z_displacement: Vertical displacement in mm (negative = sink)
         pitch_deg: Pitch angle in degrees (positive = bow up)
         roll_deg: Roll angle in degrees (positive = starboard down)
-        rotation_center: Center point for rotation (default: shape's center of mass)
+        rotation_center: (x, y, z) tuple for rotation center (default: shape centroid)
 
     Returns:
         Transformed copy of the shape
     """
+    geo = get_backend()
+
     if rotation_center is None:
-        # Use the shape's center of mass as rotation center
-        rotation_center = shape.CenterOfGravity
+        rotation_center = geo.centroid(shape)
+
+    cx, cy, cz = rotation_center
 
     # Create a copy to avoid modifying the original
-    transformed = shape.copy()
+    transformed = geo.copy(shape)
 
     # Apply rotation if any
     if abs(pitch_deg) > 1e-6 or abs(roll_deg) > 1e-6:
         # Translate to origin
-        transformed.translate(Base.Vector(-rotation_center.x, -rotation_center.y, -rotation_center.z))
+        geo.translate(transformed, -cx, -cy, -cz)
 
         # Apply rotation
-        rot_matrix = _make_rotation_matrix(pitch_deg, roll_deg, Base.Vector(0, 0, 0))
-        transformed = transformed.transformGeometry(rot_matrix)
+        rot_matrix = _make_rotation_matrix(pitch_deg, roll_deg)
+        transformed = geo.transform(transformed, rot_matrix)
 
         # Translate back
-        transformed.translate(rotation_center)
+        geo.translate(transformed, cx, cy, cz)
 
     # Apply z displacement
-    transformed.translate(Base.Vector(0, 0, z_displacement))
+    geo.translate(transformed, 0, 0, z_displacement)
 
     return transformed
 
 
-def compute_submerged_volume(shape: Part.Shape, water_level_z: float = 0.0) -> dict:
+def compute_submerged_volume(shape, water_level_z: float = 0.0) -> dict:
     """
     Compute the submerged portion of a shape below a water plane.
 
     Args:
-        shape: The FreeCAD shape (already transformed to final pose)
+        shape: The shape (already transformed to final pose)
         water_level_z: Z coordinate of the water surface (default: 0)
 
     Returns:
         Dictionary with:
-        - submerged_shape: The submerged portion (Part.Shape or None)
+        - submerged_shape: The submerged portion (or None)
         - volume_mm3: Volume in mm³
         - CoB: Center of buoyancy as {"x", "y", "z"} in mm
     """
-    # Get bounding box to determine cutting box dimensions
-    bbox = shape.BoundBox
+    geo = get_backend()
+
+    xmin, ymin, zmin, xmax, ymax, zmax = geo.bounding_box(shape)
 
     # Check if any part is below water
-    if bbox.ZMin >= water_level_z:
+    if zmin >= water_level_z:
         return {
             "submerged_shape": None,
             "volume_mm3": 0.0,
             "CoB": {"x": 0.0, "y": 0.0, "z": 0.0}
         }
 
-    # Create a large box below the water level to use for intersection
-    # The box extends from well below the shape to the water surface
     margin = 1000  # mm margin around the shape
-    box_min_x = bbox.XMin - margin
-    box_min_y = bbox.YMin - margin
-    box_min_z = bbox.ZMin - margin
-
-    box_length = bbox.XLength + 2 * margin
-    box_width = bbox.YLength + 2 * margin
-    box_height = water_level_z - box_min_z  # From bottom to water surface
+    box_origin = (xmin - margin, ymin - margin, zmin - margin)
+    box_height = water_level_z - (zmin - margin)
 
     if box_height <= 0:
         return {
@@ -227,37 +198,28 @@ def compute_submerged_volume(shape: Part.Shape, water_level_z: float = 0.0) -> d
             "CoB": {"x": 0.0, "y": 0.0, "z": 0.0}
         }
 
-    # Create the underwater cutting box
-    water_box = Part.makeBox(box_length, box_width, box_height,
-                             Base.Vector(box_min_x, box_min_y, box_min_z))
+    box_size = (
+        (xmax - xmin) + 2 * margin,
+        (ymax - ymin) + 2 * margin,
+        box_height,
+    )
 
-    # Intersect the shape with the underwater box
-    try:
-        submerged = shape.common(water_box)
-    except Exception as e:
-        print(f"Warning: Boolean intersection failed: {e}", file=sys.stderr)
+    submerged = geo.intersect_with_box(shape, box_origin, box_size)
+
+    if submerged is None:
         return {
             "submerged_shape": None,
             "volume_mm3": 0.0,
             "CoB": {"x": 0.0, "y": 0.0, "z": 0.0}
         }
 
-    # Check if we got a valid result
-    if submerged.isNull() or submerged.Volume < 1e-6:
-        return {
-            "submerged_shape": None,
-            "volume_mm3": 0.0,
-            "CoB": {"x": 0.0, "y": 0.0, "z": 0.0}
-        }
-
-    # Get volume and center of mass of submerged portion
-    volume_mm3 = submerged.Volume
-    cog = submerged.CenterOfGravity
+    volume_mm3 = geo.volume(submerged)
+    cx, cy, cz = geo.centroid(submerged)
 
     return {
         "submerged_shape": submerged,
         "volume_mm3": volume_mm3,
-        "CoB": {"x": cog.x, "y": cog.y, "z": cog.z}
+        "CoB": {"x": cx, "y": cy, "z": cz}
     }
 
 
@@ -279,10 +241,10 @@ def _build_pattern_list(hull_groups: dict) -> list:
 
 def load_hull(fcstd_path: str, hull_groups: dict = None, hull_components: list = None) -> dict:
     """
-    Load hull geometry from a FreeCAD document.
+    Load hull geometry from a CAD document.
 
-    Opens the document, extracts hull component shapes (with .copy() so they
-    are independent of the document), computes rotation center and per-group
+    Opens the document, extracts hull component shapes (copied so they are
+    independent of the document), computes rotation center and per-group
     reference points, then closes the document.
 
     This should be called **once** per run. The returned dict is passed to
@@ -290,7 +252,7 @@ def load_hull(fcstd_path: str, hull_groups: dict = None, hull_components: list =
     any file I/O.
 
     Args:
-        fcstd_path: Path to the FreeCAD design file
+        fcstd_path: Path to the CAD design file
         hull_groups: Dict mapping group names to lists of component name
                      patterns. Defaults to DEFAULT_HULL_GROUPS.
         hull_components: Deprecated. Flat list of component name patterns.
@@ -299,33 +261,35 @@ def load_hull(fcstd_path: str, hull_groups: dict = None, hull_components: list =
     Returns:
         Dictionary with:
         - hull_shapes: list of {"label", "shape", "pattern", "group"} with copied shapes
-        - rotation_center: Base.Vector for pose transformations
+        - rotation_center: (x, y, z) tuple for pose transformations
         - group_refs_body: dict mapping group name to {"x", "y", "z"} reference point
         - group_total_volumes_mm3: dict mapping group name to total volume in mm3
     """
+    geo = get_backend()
+    reader = get_reader()
+
     if hull_groups is None:
         if hull_components is not None:
-            # Legacy path: wrap flat list into a single group
             hull_groups = {"hull": hull_components}
         else:
             hull_groups = DEFAULT_HULL_GROUPS
 
     pattern_list = _build_pattern_list(hull_groups)
 
-    doc = App.openDocument(fcstd_path)
-    all_objects = _get_all_objects(doc.Objects)
+    doc = reader.open(fcstd_path)
+    all_objects = reader.get_objects(doc)
 
     hull_shapes = []
     processed_labels = set()
 
     for obj in all_objects:
-        if not hasattr(obj, 'Shape') or obj.Shape.isNull():
+        if not obj["has_shape"]:
             continue
 
-        if obj.Label in processed_labels:
+        if obj["label"] in processed_labels:
             continue
 
-        label_lower = obj.Label.lower()
+        label_lower = obj["label"].lower()
 
         matched_pattern = None
         matched_group = None
@@ -338,10 +302,10 @@ def load_hull(fcstd_path: str, hull_groups: dict = None, hull_components: list =
         if matched_pattern is None:
             continue
 
-        processed_labels.add(obj.Label)
+        processed_labels.add(obj["label"])
         hull_shapes.append({
-            "label": obj.Label,
-            "shape": obj.Shape.copy(),
+            "label": obj["label"],
+            "shape": obj["shape"],
             "pattern": matched_pattern,
             "group": matched_group
         })
@@ -349,18 +313,15 @@ def load_hull(fcstd_path: str, hull_groups: dict = None, hull_components: list =
     group_names = list(hull_groups.keys())
 
     if not hull_shapes:
-        App.closeDocument(doc.Name)
+        reader.close(doc)
         return {
             "hull_shapes": [],
-            "rotation_center": Base.Vector(0, 0, 0),
+            "rotation_center": (0.0, 0.0, 0.0),
             "group_refs_body": {name: {"x": 0.0, "y": 0.0, "z": 0.0} for name in group_names},
             "group_total_volumes_mm3": {name: 0.0 for name in group_names},
         }
 
     # Compute per-group reference points (body frame) from original geometry.
-    # Reference point: centroid x/y averaged across group shapes, z_min of group.
-    # Mirror copies (label contains "001") are excluded from z_min for the
-    # ama group (they are the port-side mirror of the starboard ama).
     group_x_sum = {name: 0.0 for name in group_names}
     group_y_sum = {name: 0.0 for name in group_names}
     group_z_min = {name: None for name in group_names}
@@ -368,16 +329,16 @@ def load_hull(fcstd_path: str, hull_groups: dict = None, hull_components: list =
 
     for hs in hull_shapes:
         g = hs["group"]
-        bbox = hs["shape"].BoundBox
-        cog = hs["shape"].CenterOfGravity
+        xmin, ymin, zmin, xmax, ymax, zmax = geo.bounding_box(hs["shape"])
+        cx, cy, cz = geo.centroid(hs["shape"])
 
         # Skip mirror copies for z_min calculation
         if "001" not in hs["label"]:
-            if group_z_min[g] is None or bbox.ZMin < group_z_min[g]:
-                group_z_min[g] = bbox.ZMin
+            if group_z_min[g] is None or zmin < group_z_min[g]:
+                group_z_min[g] = zmin
 
-        group_x_sum[g] += cog.x
-        group_y_sum[g] += cog.y
+        group_x_sum[g] += cx
+        group_y_sum[g] += cy
         group_count[g] += 1
 
     group_refs_body = {}
@@ -391,28 +352,26 @@ def load_hull(fcstd_path: str, hull_groups: dict = None, hull_components: list =
 
     # Compute the combined center of mass for rotation center
     total_volume = 0.0
-    weighted_center = Base.Vector(0, 0, 0)
+    wx, wy, wz = 0.0, 0.0, 0.0
     for hs in hull_shapes:
-        vol = hs["shape"].Volume
-        cog = hs["shape"].CenterOfGravity
+        vol = geo.volume(hs["shape"])
+        cx, cy, cz = geo.centroid(hs["shape"])
         total_volume += vol
-        weighted_center += Base.Vector(cog.x * vol, cog.y * vol, cog.z * vol)
+        wx += cx * vol
+        wy += cy * vol
+        wz += cz * vol
 
     if total_volume > 0:
-        rotation_center = Base.Vector(
-            weighted_center.x / total_volume,
-            weighted_center.y / total_volume,
-            weighted_center.z / total_volume
-        )
+        rotation_center = (wx / total_volume, wy / total_volume, wz / total_volume)
     else:
-        rotation_center = Base.Vector(0, 0, 0)
+        rotation_center = (0.0, 0.0, 0.0)
 
     # Compute total volumes per group
     group_total_volumes_mm3 = {name: 0.0 for name in group_names}
     for hs in hull_shapes:
-        group_total_volumes_mm3[hs["group"]] += hs["shape"].Volume
+        group_total_volumes_mm3[hs["group"]] += geo.volume(hs["shape"])
 
-    App.closeDocument(doc.Name)
+    reader.close(doc)
 
     return {
         "hull_shapes": hull_shapes,
@@ -424,9 +383,10 @@ def load_hull(fcstd_path: str, hull_groups: dict = None, hull_components: list =
 
 def _transform_ref_point(ref_body, z_disp, pitch, roll, rot_center):
     """Transform a reference point from body to world frame."""
-    x = ref_body["x"] - rot_center.x
-    y = ref_body["y"] - rot_center.y
-    z = ref_body["z"] - rot_center.z
+    rcx, rcy, rcz = rot_center
+    x = ref_body["x"] - rcx
+    y = ref_body["y"] - rcy
+    z = ref_body["z"] - rcz
 
     pitch_rad = math.radians(pitch)
     roll_rad = math.radians(roll)
@@ -438,9 +398,9 @@ def _transform_ref_point(ref_body, z_disp, pitch, roll, rot_center):
     z_new = -sin_r * x + cos_r * sin_p * y + cos_r * cos_p * z
 
     return {
-        "x": round(x_new + rot_center.x, 2),
-        "y": round(y_new + rot_center.y, 2),
-        "z": round(z_new + rot_center.z + z_disp, 2)
+        "x": round(x_new + rcx, 2),
+        "y": round(y_new + rcy, 2),
+        "z": round(z_new + rcz + z_disp, 2)
     }
 
 
@@ -497,7 +457,7 @@ def compute_center_of_buoyancy(hull: dict, z_displacement: float = 0.0,
 
     # Transform each hull shape and compute submerged volume
     total_submerged_volume = 0.0
-    weighted_cob = Base.Vector(0, 0, 0)
+    wcob_x, wcob_y, wcob_z = 0.0, 0.0, 0.0
     component_results = []
 
     for hs in hull_shapes:
@@ -531,18 +491,16 @@ def compute_center_of_buoyancy(hull: dict, z_displacement: float = 0.0,
 
         # Accumulate for total CoB calculation
         total_submerged_volume += vol
-        weighted_cob += Base.Vector(
-            cob["x"] * vol,
-            cob["y"] * vol,
-            cob["z"] * vol
-        )
+        wcob_x += cob["x"] * vol
+        wcob_y += cob["y"] * vol
+        wcob_z += cob["z"] * vol
 
     # Compute combined center of buoyancy
     if total_submerged_volume > 1e-6:
         combined_cob = {
-            "x": round(weighted_cob.x / total_submerged_volume, 2),
-            "y": round(weighted_cob.y / total_submerged_volume, 2),
-            "z": round(weighted_cob.z / total_submerged_volume, 2)
+            "x": round(wcob_x / total_submerged_volume, 2),
+            "y": round(wcob_y / total_submerged_volume, 2),
+            "z": round(wcob_z / total_submerged_volume, 2)
         }
     else:
         combined_cob = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -555,6 +513,8 @@ def compute_center_of_buoyancy(hull: dict, z_displacement: float = 0.0,
     volume_m3 = total_submerged_volume / 1e9  # mm³ to m³
     displacement_kg = volume_m3 * SALTWATER_DENSITY_KG_M3
     buoyancy_force_N = displacement_kg * GRAVITY_M_S2
+
+    rcx, rcy, rcz = rotation_center
 
     # Transform per-group reference points to world frame
     hull_refs = {}
@@ -586,9 +546,9 @@ def compute_center_of_buoyancy(hull: dict, z_displacement: float = 0.0,
             "pitch_deg": pitch_deg,
             "roll_deg": roll_deg,
             "rotation_center": {
-                "x": round(rotation_center.x, 2),
-                "y": round(rotation_center.y, 2),
-                "z": round(rotation_center.z, 2)
+                "x": round(rcx, 2),
+                "y": round(rcy, 2),
+                "z": round(rcz, 2)
             }
         },
         "hull_refs": hull_refs,

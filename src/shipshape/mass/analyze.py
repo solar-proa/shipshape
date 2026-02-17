@@ -1,30 +1,26 @@
 #!/usr/bin/env python3
 """
-Mass analysis - computes mass, volume, and component breakdown from FreeCAD model.
+Mass analysis - computes mass, volume, and component breakdown from CAD model.
 """
 
-import sys
-
-try:
-    import FreeCAD as App
-except ImportError as e:
-    print(f"ERROR: {e}", file=sys.stderr)
-    print("This module requires FreeCAD (conda-forge or bundled)", file=sys.stderr)
-    sys.exit(1)
+from shipshape.physics.geometry import get_backend, get_reader
 
 
 def analyze_mass(fcstd_path: str, materials: dict) -> dict:
     """
-    Analyze mass properties of a FreeCAD model.
+    Analyze mass properties of a CAD model.
 
     Args:
-        fcstd_path: Path to the FreeCAD design file
+        fcstd_path: Path to the CAD design file
         materials: The materials dict (full JSON object with a "materials" key)
 
     Returns:
         Dictionary with mass analysis results
     """
-    doc = App.openDocument(fcstd_path)
+    geo = get_backend()
+    reader = get_reader()
+
+    doc = reader.open(fcstd_path)
 
     materials = materials["materials"]
 
@@ -33,26 +29,17 @@ def analyze_mass(fcstd_path: str, materials: dict) -> dict:
     processed_labels = set()
     all_components = []
 
-    def get_all_objects(obj_list):
-        """Recursively get all objects including those in groups"""
-        all_objs = []
-        for obj in obj_list:
-            all_objs.append(obj)
-            if hasattr(obj, 'Group'):
-                all_objs.extend(get_all_objects(obj.Group))
-        return all_objs
-
-    all_objects = get_all_objects(doc.Objects)
+    all_objects = reader.get_objects(doc)
 
     for obj in all_objects:
-        if not hasattr(obj, 'Shape'):
+        if not obj["has_shape"]:
             continue
 
-        if obj.Label in processed_labels:
+        if obj["label"] in processed_labels:
             continue
 
         # Look for material name in label (format: ComponentName__material_name)
-        label = obj.Label
+        label = obj["label"]
         label_lower = label.lower()
         mat_key = None
 
@@ -63,7 +50,7 @@ def analyze_mass(fcstd_path: str, materials: dict) -> dict:
 
         if mat_key and mat_key in materials:
             mat = materials[mat_key]
-            volume_m3 = obj.Shape.Volume / 1e9
+            volume_m3 = geo.volume(obj["shape"]) / 1e9
             volume_liters = volume_m3 * 1000
             weight_kg = volume_m3 * mat['density_kg_m3']
 
@@ -76,13 +63,13 @@ def analyze_mass(fcstd_path: str, materials: dict) -> dict:
 
             # Track individual component
             all_components.append({
-                'name': obj.Label,
+                'name': obj["label"],
                 'mass_kg': round(weight_kg, 2),
                 'volume_liters': round(volume_liters, 2),
                 'material': mat['name']
             })
 
-            processed_labels.add(obj.Label)
+            processed_labels.add(obj["label"])
 
     total_mass = sum(material_weights.values())
     total_volume = sum(material_volumes.values())
@@ -118,5 +105,5 @@ def analyze_mass(fcstd_path: str, materials: dict) -> dict:
             'volume_liters': round(material_volumes[mat_name], 2)
         }
 
-    App.closeDocument(doc.Name)
+    reader.close(doc)
     return result
