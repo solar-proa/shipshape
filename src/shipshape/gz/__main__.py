@@ -54,6 +54,9 @@ def main():
                         help='Maximum heel angle in degrees (default: 65)')
     parser.add_argument('--heel-step', type=float, default=5.0,
                         help='Heel angle step in degrees (default: 5)')
+    parser.add_argument('--hull-groups',
+                        help='Path to hull groups JSON file or inline JSON string '
+                             '(maps group names to pattern lists)')
     parser.add_argument('--quiet', action='store_true',
                         help='Suppress progress output')
 
@@ -102,14 +105,25 @@ def main():
         with open(args.parameters) as f:
             params = json.load(f)
         beam_m = params.get('beam', 0) / 1000.0
-        loa_m = params.get('vaka_length', params.get('ama_length', 0)) / 1000.0
+        loa_m = params.get('loa', params.get('vaka_length', params.get('ama_length', 0))) / 1000.0
         if verbose and beam_m and loa_m:
             print(f"  Dimensions: LOA={loa_m:.1f}m, beam={beam_m:.1f}m")
+
+    # Parse hull groups
+    hull_groups = None
+    if args.hull_groups:
+        if os.path.isfile(args.hull_groups):
+            with open(args.hull_groups, 'r') as f:
+                hull_groups = json.load(f)
+        else:
+            hull_groups = json.loads(args.hull_groups)
+        if verbose:
+            print(f"  Hull groups: {list(hull_groups.keys())}")
 
     # Load hull geometry (once, reused across all heel angles)
     if verbose:
         print("  Loading hull geometry...")
-    hull = load_hull(args.design)
+    hull = load_hull(args.design, hull_groups=hull_groups)
 
     # Compute GZ curve
     result = compute_gz_curve(

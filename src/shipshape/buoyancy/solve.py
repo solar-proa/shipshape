@@ -199,6 +199,8 @@ def estimate_initial_z(cog_result: dict, hull: dict) -> float:
 def solve_equilibrium(hull: dict, cog_result: dict,
                       max_iterations: int = DEFAULT_MAX_ITERATIONS,
                       tolerance: float = DEFAULT_TOLERANCE,
+                      z_step: float = DEFAULT_Z_STEP,
+                      angle_step: float = DEFAULT_ANGLE_STEP,
                       verbose: bool = True) -> dict:
     """
     Find equilibrium pose using Newton-Raphson iteration.
@@ -270,7 +272,8 @@ def solve_equilibrium(hull: dict, cog_result: dict,
             break
 
         # Compute Jacobian
-        J = compute_jacobian(hull, cog_result, z, pitch, roll)
+        J = compute_jacobian(hull, cog_result, z, pitch, roll,
+                             z_step=z_step, angle_step=angle_step)
 
         # Check if Jacobian is singular
         det = np.linalg.det(J)
@@ -287,6 +290,16 @@ def solve_equilibrium(hull: dict, cog_result: dict,
         else:
             # Newton-Raphson update
             delta = np.linalg.solve(J, -residuals)
+
+        # Freeze DOFs whose residual is already below tolerance.
+        # Prevents cross-coupling from corrupting converged components
+        # (e.g. roll=0 on a symmetric hull getting kicked by a large pitch error).
+        dof_names = ['z', 'pitch', 'roll']
+        for i in range(3):
+            if abs(residuals[i]) < tolerance and abs(delta[i]) > 0:
+                if verbose:
+                    print(f"    Freezing {dof_names[i]} (residual {residuals[i]:.6f} already below tolerance)")
+                delta[i] = 0.0
 
         # Limit maximum step size for stability
         max_z_step = 200.0  # mm

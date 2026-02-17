@@ -29,7 +29,8 @@ except ImportError as e:
 from shipshape.physics.center_of_buoyancy import load_hull
 from shipshape.physics.center_of_mass import compute_center_of_gravity, compute_cog_from_mass_artifact
 
-from .solve import solve_equilibrium, DEFAULT_MAX_ITERATIONS, DEFAULT_TOLERANCE
+from .solve import (solve_equilibrium, DEFAULT_MAX_ITERATIONS, DEFAULT_TOLERANCE,
+                     DEFAULT_Z_STEP, DEFAULT_ANGLE_STEP)
 
 
 def main():
@@ -50,6 +51,10 @@ def main():
                         help=f'Maximum iterations (default: {DEFAULT_MAX_ITERATIONS})')
     parser.add_argument('--tolerance', type=float, default=DEFAULT_TOLERANCE,
                         help=f'Convergence tolerance (default: {DEFAULT_TOLERANCE})')
+    parser.add_argument('--z-step', type=float, default=DEFAULT_Z_STEP,
+                        help=f'Jacobian z perturbation in mm (default: {DEFAULT_Z_STEP})')
+    parser.add_argument('--angle-step', type=float, default=DEFAULT_ANGLE_STEP,
+                        help=f'Jacobian angle perturbation in degrees (default: {DEFAULT_ANGLE_STEP})')
     parser.add_argument('--hull-groups',
                         help='Path to hull groups JSON file or inline JSON string '
                              '(maps group names to pattern lists)')
@@ -112,6 +117,8 @@ def main():
         cog_result,
         max_iterations=args.max_iterations,
         tolerance=args.tolerance,
+        z_step=args.z_step,
+        angle_step=args.angle_step,
         verbose=verbose
     )
 

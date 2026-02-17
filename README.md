@@ -2,7 +2,7 @@
 
 Open-source parametric vessel design and validation library.
 
-Shipshape provides boat-design-independent tools for naval engineering analysis. It is used by [Solar Proa CAD](https://github.com/solar-proa/CAD) but can be applied to any parametric vessel design.
+Shipshape provides boat-design-independent tools for naval engineering analysis. It is used by [Solar Proa](https://github.com/shipshape-marine/solar-proa) but can be applied to any parametric vessel design.
 
 ## Modules
 
@@ -91,4 +91,4 @@ python -m shipshape.validate_structure \
 
 ## License
 
-MIT
+Apache 2.0

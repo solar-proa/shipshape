@@ -86,8 +86,16 @@ def analyze_mass(fcstd_path: str, materials: dict) -> dict:
 
     total_mass = sum(material_weights.values())
     total_volume = sum(material_volumes.values())
-    total_volume_air = material_volumes['air']
-    total_unsinkable_volume = total_volume - total_volume_air
+
+    # Escapable volume: materials flagged buoyancy_only (e.g. trapped air)
+    # contribute to buoyancy but escape when the hull is breached,
+    # so they don't count toward unsinkable volume.
+    escapable_volume = sum(
+        material_volumes.get(mat_key, 0)
+        for mat_key, mat in materials.items()
+        if mat.get('buoyancy_only', False)
+    )
+    total_unsinkable_volume = total_volume - escapable_volume
 
     # Build result
     result = {
