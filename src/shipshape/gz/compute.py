@@ -254,6 +254,7 @@ def find_equilibrium_z_at_heel(hull: dict, target_weight_N: float,
 def compute_gz_curve(hull: dict, buoyancy_result: dict,
                      heel_angles: list = None,
                      beam_m: float = None, loa_m: float = None,
+                     tolerance: float = 0.01,
                      verbose: bool = True) -> dict:
     """
     Compute the GZ curve by sweeping through heel angles.
@@ -269,6 +270,7 @@ def compute_gz_curve(hull: dict, buoyancy_result: dict,
         heel_angles: List of heel angles in degrees (default: -20 to 60)
         beam_m: Overall beam in meters (for period estimates)
         loa_m: Length overall in meters (for period estimates)
+        tolerance: Relative force balance tolerance for equilibrium solver
         verbose: Print progress
 
     Returns:
@@ -284,6 +286,7 @@ def compute_gz_curve(hull: dict, buoyancy_result: dict,
     # Extract equilibrium data
     eq = buoyancy_result['equilibrium']
     eq_z = eq['z_offset_mm']
+    eq_roll = eq.get('roll_deg', 0.0)
 
     # CoG in body frame
     cog_body = buoyancy_result['center_of_gravity_body']
@@ -299,14 +302,12 @@ def compute_gz_curve(hull: dict, buoyancy_result: dict,
             print(f"  Computing GZ at heel = {roll_deg:+.1f}°...", end='', flush=True)
 
         # Find equilibrium z at this heel angle
-        # Use relaxed tolerance for GZ curve — at extreme heel angles the
-        # buoyancy function can be shallow, making tight convergence difficult.
         result = find_equilibrium_z_at_heel(
             hull, weight_N,
             pitch_deg=0.0,
             roll_deg=roll_deg,
             z_initial=eq_z,
-            tolerance=0.10,
+            tolerance=tolerance,
             max_iterations=50
         )
 
@@ -334,13 +335,18 @@ def compute_gz_curve(hull: dict, buoyancy_result: dict,
         # CoB is already in world frame
         cob = cob_result['CoB']
 
-        # GZ = transverse righting arm (CoB_x - CoG_x)
-        # Positive GZ means CoB is to starboard of CoG → restores from starboard heel
-        # Negative GZ means CoB is to port of CoG → restores from port heel
-        # This is the standard naval architecture sign convention where GZ
-        # passes through zero near upright and the curve is continuous.
+        # GZ = righting arm, positive when opposing the heel direction.
+        # Use the equilibrium roll as reference: for heel angles above
+        # equilibrium, GZ = raw; below equilibrium, GZ = -raw.
+        # This gives a continuous curve that is positive (righting) on
+        # both sides and crosses zero at equilibrium and at capsize/turtle.
         raw_gz_mm = cob['x'] - cog_world['x']
-        gz_mm = raw_gz_mm
+        if roll_deg > eq_roll:
+            gz_mm = raw_gz_mm
+        elif roll_deg < eq_roll:
+            gz_mm = -raw_gz_mm
+        else:
+            gz_mm = 0.0
         gz_m = gz_mm / 1000.0
 
         # Righting moment = GZ x weight
@@ -400,14 +406,14 @@ def compute_gz_curve(hull: dict, buoyancy_result: dict,
                 break
 
         # Find capsize angle (negative heel side)
-        # GZ is negative (righting) at moderate negative heel, then crosses
-        # zero toward positive as the boat capsizes. Scan from near-zero
-        # toward more negative angles to find where GZ goes from negative to ≥ 0.
+        # GZ is positive (righting) at moderate negative heel, then crosses
+        # zero as the boat capsizes. Scan from near-equilibrium toward more
+        # negative angles to find where GZ goes from positive to ≤ 0.
         capsize_angle = None
-        neg_points = [p for p in converged_points if p['heel_deg'] < -1]
-        neg_points.sort(key=lambda p: p['heel_deg'], reverse=True)  # 0 toward negative
+        neg_points = [p for p in converged_points if p['heel_deg'] < eq_roll - 1]
+        neg_points.sort(key=lambda p: p['heel_deg'], reverse=True)  # toward negative
         for i in range(1, len(neg_points)):
-            if neg_points[i-1]['gz_m'] < 0 and neg_points[i]['gz_m'] >= 0:
+            if neg_points[i-1]['gz_m'] > 0 and neg_points[i]['gz_m'] <= 0:
                 gz1 = neg_points[i-1]['gz_m']
                 gz2 = neg_points[i]['gz_m']
                 angle1 = neg_points[i-1]['heel_deg']

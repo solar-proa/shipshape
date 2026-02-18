@@ -50,6 +50,8 @@ def main():
     parser.add_argument('--hull-groups',
                         help='Path to hull groups JSON file or inline JSON string '
                              '(maps group names to pattern lists)')
+    parser.add_argument('--tolerance', type=float, default=0.01,
+                        help='Relative force balance tolerance (default: 0.01)')
     parser.add_argument('--quiet', action='store_true',
                         help='Suppress progress output')
 
@@ -125,6 +127,7 @@ def main():
         heel_angles=heel_angles,
         beam_m=beam_m,
         loa_m=loa_m,
+        tolerance=args.tolerance,
         verbose=verbose
     )
 

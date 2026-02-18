@@ -72,6 +72,17 @@ python -m shipshape.gz \
     --output-png artifact/boat.gz.png
 ```
 
+## Releasing a new version
+
+1. Edit `pyproject.toml` — bump the `version` field
+2. `git add pyproject.toml`
+3. `git commit -m "Bump version to X.Y.Z"`
+4. `git push origin main`
+5. `git tag vX.Y.Z`
+6. `git push origin vX.Y.Z`
+
+Push the commit before the tag so CI has the code when the tag event triggers the PyPI release.
+
 ## License
 
 Apache 2.0
