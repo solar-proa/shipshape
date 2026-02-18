@@ -299,11 +299,15 @@ def compute_gz_curve(hull: dict, buoyancy_result: dict,
             print(f"  Computing GZ at heel = {roll_deg:+.1f}°...", end='', flush=True)
 
         # Find equilibrium z at this heel angle
+        # Use relaxed tolerance for GZ curve — at extreme heel angles the
+        # buoyancy function can be shallow, making tight convergence difficult.
         result = find_equilibrium_z_at_heel(
             hull, weight_N,
             pitch_deg=0.0,
             roll_deg=roll_deg,
-            z_initial=eq_z
+            z_initial=eq_z,
+            tolerance=0.10,
+            max_iterations=50
         )
 
         if not result['converged']:
@@ -330,13 +334,13 @@ def compute_gz_curve(hull: dict, buoyancy_result: dict,
         # CoB is already in world frame
         cob = cob_result['CoB']
 
-        # GZ = transverse righting arm
+        # GZ = transverse righting arm (CoB_x - CoG_x)
+        # Positive GZ means CoB is to starboard of CoG → restores from starboard heel
+        # Negative GZ means CoB is to port of CoG → restores from port heel
+        # This is the standard naval architecture sign convention where GZ
+        # passes through zero near upright and the curve is continuous.
         raw_gz_mm = cob['x'] - cog_world['x']
-        if abs(roll_deg) < 0.01:
-            gz_mm = raw_gz_mm
-        else:
-            sign = 1 if roll_deg > 0 else -1
-            gz_mm = sign * raw_gz_mm
+        gz_mm = raw_gz_mm
         gz_m = gz_mm / 1000.0
 
         # Righting moment = GZ x weight
@@ -378,7 +382,9 @@ def compute_gz_curve(hull: dict, buoyancy_result: dict,
         else:
             range_positive = 0
 
-        # Find turtle angle
+        # Find turtle angle (positive heel side)
+        # GZ is positive (righting) at moderate positive heel, then crosses
+        # zero as the boat turtles. Find where GZ goes from positive to ≤ 0.
         turtle_angle = None
         for i in range(1, len(converged_points)):
             if (converged_points[i-1]['heel_deg'] > 0 and
@@ -393,15 +399,19 @@ def compute_gz_curve(hull: dict, buoyancy_result: dict,
                     turtle_angle = angle1
                 break
 
-        # Find capsize angle
+        # Find capsize angle (negative heel side)
+        # GZ is negative (righting) at moderate negative heel, then crosses
+        # zero toward positive as the boat capsizes. Scan from near-zero
+        # toward more negative angles to find where GZ goes from negative to ≥ 0.
         capsize_angle = None
-        for i in range(len(converged_points) - 1, 0, -1):
-            if (converged_points[i]['heel_deg'] < 0 and
-                converged_points[i]['gz_m'] > 0 and converged_points[i-1]['gz_m'] <= 0):
-                gz1 = converged_points[i-1]['gz_m']
-                gz2 = converged_points[i]['gz_m']
-                angle1 = converged_points[i-1]['heel_deg']
-                angle2 = converged_points[i]['heel_deg']
+        neg_points = [p for p in converged_points if p['heel_deg'] < -1]
+        neg_points.sort(key=lambda p: p['heel_deg'], reverse=True)  # 0 toward negative
+        for i in range(1, len(neg_points)):
+            if neg_points[i-1]['gz_m'] < 0 and neg_points[i]['gz_m'] >= 0:
+                gz1 = neg_points[i-1]['gz_m']
+                gz2 = neg_points[i]['gz_m']
+                angle1 = neg_points[i-1]['heel_deg']
+                angle2 = neg_points[i]['heel_deg']
                 if gz1 != gz2:
                     capsize_angle = angle1 + gz1 * (angle2 - angle1) / (gz1 - gz2)
                 else:
